@@ -1,3 +1,17 @@
-pub mod initialize;
+pub mod create_tournament;
+pub mod register_fighter;
+pub mod start_battle;
+pub mod place_bet;
+pub mod resolve_battle;
+pub mod claim_bet_winnings;
+pub mod claim_resurrection;
+pub mod advance_round;
 
-pub use initialize::*;
+pub use create_tournament::*;
+pub use register_fighter::*;
+pub use start_battle::*;
+pub use place_bet::*;
+pub use resolve_battle::*;
+pub use claim_bet_winnings::*;
+pub use claim_resurrection::*;
+pub use advance_round::*;

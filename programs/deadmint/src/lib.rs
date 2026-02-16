@@ -15,7 +15,5 @@ declare_id!("CSAEZjQaAui4j3nQhbLBtwACf5BVK49V2MN61toztavW");
 pub mod deadmint {
     use super::*;
 
-    pub fn initialize(ctx: Context<Initialize>) -> Result<()> {
-        initialize::handler(ctx)
-    }
+    
 }
