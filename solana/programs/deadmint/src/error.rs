@@ -45,4 +45,26 @@ pub enum ErrorCode {
     NotEnoughFighters,
     #[msg("Round does not match current tournament round")]
     InvalidRound,
+
+    // --- betting ---
+    #[msg("Betting is closed for this battle")]
+    BettingClosed,
+    #[msg("Bet amount must be greater than 0")]
+    InvalidBetAmount,
+
+    // --- resolve battle ---
+    #[msg("Battle cannot be resolved in its current state")]
+    BattleNotResolvable,
+    #[msg("Fighter account does not match battle")]
+    FighterMismatch,
+    #[msg("Invalid or empty randomness account")]
+    InvalidRandomnessAccount,
+    #[msg("Randomness has expired (not from previous slot)")]
+    RandomnessExpired,
+    #[msg("Randomness already revealed — cannot commit")]
+    RandomnessAlreadyRevealed,
+    #[msg("Randomness account does not match committed account")]
+    RandomnessMismatch,
+    #[msg("Randomness not yet resolved by oracle")]
+    RandomnessNotResolved,
 }

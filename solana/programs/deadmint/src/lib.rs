@@ -62,4 +62,20 @@ pub mod deadmint {
     ) -> Result<()> {
         ctx.accounts.handle(round, match_index, &ctx.bumps)
     }
+
+    pub fn place_bet(
+        ctx: Context<PlaceBet>,
+        amount: u64,
+        backing_fighter_a: bool,
+    ) -> Result<()> {
+        ctx.accounts.handle(amount, backing_fighter_a, &ctx.bumps)
+    }
+
+    pub fn commit_battle(ctx: Context<CommitBattle>) -> Result<()> {
+        ctx.accounts.handle()
+    }
+
+    pub fn resolve_battle(ctx: Context<ResolveBattle>) -> Result<()> {
+        ctx.accounts.handle()
+    }
 }
