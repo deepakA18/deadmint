@@ -24,14 +24,42 @@ pub mod deadmint {
         creator_fee_bps: Option<u16>,
         registration_seconds: Option<i64>,
     ) -> Result<()> {
-        instructions::create_tournament::handle_create_tournament(
-            ctx,
+        ctx.accounts.handle(
             name,
             tournament_id,
             max_fighters,
             entry_fee,
             creator_fee_bps,
             registration_seconds,
+            &ctx.bumps,
         )
+    }
+
+    pub fn register_fighter(
+        ctx: Context<RegisterFighter>,
+        token_name: String,
+        token_symbol: String,
+        hp: u8,
+        atk: u8,
+        def: u8,
+        spd: u8,
+        luck: u8,
+        deposit_amount: u64,
+    ) -> Result<()> {
+        ctx.accounts.handle(
+            token_name,
+            token_symbol,
+            hp, atk, def, spd, luck,
+            deposit_amount,
+            &ctx.bumps,
+        )
+    }
+
+    pub fn start_battle(
+        ctx: Context<StartBattle>,
+        round: u8,
+        match_index: u8,
+    ) -> Result<()> {
+        ctx.accounts.handle(round, match_index, &ctx.bumps)
     }
 }
