@@ -57,14 +57,20 @@ pub enum ErrorCode {
     BattleNotResolvable,
     #[msg("Fighter account does not match battle")]
     FighterMismatch,
-    #[msg("Invalid or empty randomness account")]
-    InvalidRandomnessAccount,
-    #[msg("Randomness has expired (not from previous slot)")]
-    RandomnessExpired,
-    #[msg("Randomness already revealed — cannot commit")]
-    RandomnessAlreadyRevealed,
-    #[msg("Randomness account does not match committed account")]
-    RandomnessMismatch,
-    #[msg("Randomness not yet resolved by oracle")]
-    RandomnessNotResolved,
+
+    // --- advance round ---
+    #[msg("Battle has not been resolved yet")]
+    BattleNotResolved,
+
+    // --- claims ---
+    #[msg("Tournament is not complete")]
+    TournamentNotComplete,
+    #[msg("Not the tournament champion")]
+    NotChampion,
+    #[msg("Unauthorized")]
+    Unauthorized,
+    #[msg("Already claimed")]
+    AlreadyClaimed,
+    #[msg("Bet lost — backed the wrong fighter")]
+    BetLost,
 }

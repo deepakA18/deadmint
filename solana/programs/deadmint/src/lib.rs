@@ -1,3 +1,5 @@
+#![allow(unexpected_cfgs)]
+
 pub mod constants;
 pub mod error;
 pub mod instructions;
@@ -75,7 +77,23 @@ pub mod deadmint {
         ctx.accounts.handle()
     }
 
-    pub fn resolve_battle(ctx: Context<ResolveBattle>) -> Result<()> {
+    /// VRF callback — called by MagicBlock VRF program, NOT by client
+    pub fn callback_resolve_battle(
+        ctx: Context<CallbackResolveBattle>,
+        randomness: [u8; 32],
+    ) -> Result<()> {
+        ctx.accounts.handle(randomness)
+    }
+
+    pub fn advance_round(ctx: Context<AdvanceRound>) -> Result<()> {
+        ctx.accounts.handle()
+    }
+
+    pub fn claim_bet_winnings(ctx: Context<ClaimBetWinnings>) -> Result<()> {
+        ctx.accounts.handle(&ctx.bumps)
+    }
+
+    pub fn claim_resurrection(ctx: Context<ClaimResurrection>) -> Result<()> {
         ctx.accounts.handle()
     }
 }

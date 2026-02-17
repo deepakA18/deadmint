@@ -1,13 +1,18 @@
 use anchor_lang::prelude::*;
-use switchboard_on_demand::accounts::RandomnessAccountData;
+use ephemeral_vrf_sdk::anchor::vrf;
+use ephemeral_vrf_sdk::instructions::{create_request_randomness_ix, RequestRandomnessParams};
+use ephemeral_vrf_sdk::types::SerializableAccountMeta;
 use crate::error::ErrorCode;
 use crate::state::{Battle, BattleStatus, Fighter};
 
 // =============================================================
-//  TX 1 — COMMIT: close betting + record Switchboard randomness
+//  STEP 1 — COMMIT: close betting + request MagicBlock VRF
 // =============================================================
-//  Client bundles: [ Switchboard commitIx, commit_battle IX ]
+//  Client calls: commit_battle
+//  MagicBlock oracle resolves randomness (~1-3s)
+//  MagicBlock VRF program calls back: callback_resolve_battle
 
+#[vrf]
 #[derive(Accounts)]
 pub struct CommitBattle<'info> {
     #[account(
@@ -16,42 +21,54 @@ pub struct CommitBattle<'info> {
     )]
     pub battle: Account<'info, Battle>,
 
-    /// CHECK: Switchboard On-Demand randomness account.
-    /// Validated manually via RandomnessAccountData::parse.
-    pub randomness_account_data: AccountInfo<'info>,
+    pub fighter_a: Account<'info, Fighter>,
+    pub fighter_b: Account<'info, Fighter>,
+
+    /// CHECK: MagicBlock oracle queue
+    #[account(mut, address = ephemeral_vrf_sdk::consts::DEFAULT_QUEUE)]
+    pub oracle_queue: AccountInfo<'info>,
 
     #[account(mut)]
-    pub authority: Signer<'info>,
+    pub payer: Signer<'info>,
 }
 
 impl<'info> CommitBattle<'info> {
     pub fn handle(&mut self) -> Result<()> {
-        let clock = Clock::get()?;
-
-        // --- parse & validate Switchboard randomness ---
-        let randomness_data = RandomnessAccountData::parse(
-            self.randomness_account_data.data.borrow()
-        ).map_err(|_| ErrorCode::InvalidRandomnessAccount)?;
-
-        // Must be committed in the immediately previous slot (fresh)
-        require!(
-            randomness_data.seed_slot == clock.slot - 1,
-            ErrorCode::RandomnessExpired
-        );
-
-        // Must NOT be revealed yet
-        require!(
-            randomness_data.get_value(clock.slot).is_err(),
-            ErrorCode::RandomnessAlreadyRevealed
-        );
-
-        // --- close betting & record commit ---
+        // --- close betting ---
         self.battle.status = BattleStatus::Committed;
-        self.battle.randomness_account = self.randomness_account_data.key();
-        self.battle.commit_slot = randomness_data.seed_slot;
+        self.battle.commit_slot = Clock::get()?.slot;
+
+        // --- request VRF from MagicBlock ---
+        let ix = create_request_randomness_ix(RequestRandomnessParams {
+            payer: self.payer.key(),
+            oracle_queue: self.oracle_queue.key(),
+            callback_program_id: crate::ID,
+            callback_discriminator: crate::instruction::CallbackResolveBattle::DISCRIMINATOR
+                .to_vec(),
+            caller_seed: self.battle.key().to_bytes(),
+            accounts_metas: Some(vec![
+                SerializableAccountMeta {
+                    pubkey: self.battle.key(),
+                    is_signer: false,
+                    is_writable: true,
+                },
+                SerializableAccountMeta {
+                    pubkey: self.fighter_a.key(),
+                    is_signer: false,
+                    is_writable: false,
+                },
+                SerializableAccountMeta {
+                    pubkey: self.fighter_b.key(),
+                    is_signer: false,
+                    is_writable: false,
+                },
+            ]),
+            ..Default::default()
+        });
+        self.invoke_signed_vrf(&self.payer.to_account_info(), &ix)?;
 
         msg!(
-            "Battle committed: Round {} Match {} | Bets closed, awaiting reveal",
+            "Battle committed: Round {} Match {} | VRF requested, bets closed",
             self.battle.round,
             self.battle.match_index,
         );
@@ -61,12 +78,16 @@ impl<'info> CommitBattle<'info> {
 }
 
 // =============================================================
-//  TX 2 — RESOLVE: reveal randomness + run combat simulation
+//  STEP 2 — CALLBACK: MagicBlock VRF delivers randomness
 // =============================================================
-//  Client bundles: [ Switchboard revealIx, resolve_battle IX ]
+//  Called automatically by MagicBlock VRF program, NOT by client
 
 #[derive(Accounts)]
-pub struct ResolveBattle<'info> {
+pub struct CallbackResolveBattle<'info> {
+    /// MagicBlock VRF program identity — proves this is a legit callback
+    #[account(address = ephemeral_vrf_sdk::consts::VRF_PROGRAM_IDENTITY)]
+    pub vrf_program_identity: Signer<'info>,
+
     #[account(
         mut,
         constraint = battle.status == BattleStatus::Committed @ ErrorCode::BattleNotResolvable,
@@ -82,40 +103,12 @@ pub struct ResolveBattle<'info> {
         constraint = fighter_b.key() == battle.fighter_b @ ErrorCode::FighterMismatch,
     )]
     pub fighter_b: Account<'info, Fighter>,
-
-    /// CHECK: Switchboard On-Demand randomness account — must match battle.randomness_account
-    pub randomness_account_data: AccountInfo<'info>,
-
-    #[account(mut)]
-    pub authority: Signer<'info>,
 }
 
-impl<'info> ResolveBattle<'info> {
-    pub fn handle(&mut self) -> Result<()> {
-        let clock = Clock::get()?;
-
-        // --- validate randomness account matches commit ---
-        require!(
-            self.randomness_account_data.key() == self.battle.randomness_account,
-            ErrorCode::RandomnessMismatch
-        );
-
-        // --- parse & reveal Switchboard randomness ---
-        let randomness_data = RandomnessAccountData::parse(
-            self.randomness_account_data.data.borrow()
-        ).map_err(|_| ErrorCode::InvalidRandomnessAccount)?;
-
-        require!(
-            randomness_data.seed_slot == self.battle.commit_slot,
-            ErrorCode::RandomnessExpired
-        );
-
-        let revealed_value = randomness_data
-            .get_value(clock.slot)
-            .map_err(|_| ErrorCode::RandomnessNotResolved)?;
-
+impl<'info> CallbackResolveBattle<'info> {
+    pub fn handle(&mut self, randomness: [u8; 32]) -> Result<()> {
         // --- combat simulation ---
-        let winner_key = self.simulate_combat(&revealed_value)?;
+        let winner_key = self.simulate_combat(&randomness)?;
 
         // --- finalize ---
         self.battle.winner = Some(winner_key);
@@ -132,7 +125,7 @@ impl<'info> ResolveBattle<'info> {
     }
 
     /// Stat-weighted combat: 10 exchanges, HP pool, crits from LUCK.
-    /// Uses the 32 random bytes from Switchboard VRF.
+    /// Uses 32 VRF random bytes from MagicBlock.
     fn simulate_combat(&self, random_value: &[u8; 32]) -> Result<Pubkey> {
         let a = &self.fighter_a;
         let b = &self.fighter_b;
@@ -178,7 +171,6 @@ impl<'info> ResolveBattle<'info> {
         } else if hp_b > hp_a {
             self.battle.fighter_b
         } else {
-            // tiebreaker: higher luck wins
             if a.luck >= b.luck {
                 self.battle.fighter_a
             } else {
