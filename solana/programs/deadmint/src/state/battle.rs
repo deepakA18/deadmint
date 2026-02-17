@@ -22,6 +22,23 @@ pub struct Battle {
     pub bump: u8,
 }
 
+impl Battle {
+    pub const SIZE: usize = 8  // discriminator
+        + 32  // tournament
+        + 1   // round
+        + 1   // match_index
+        + 32  // fighter_a
+        + 32  // fighter_b
+        + 33  // winner (Option<Pubkey>)
+        + 1   // status
+        + 32  // randomness_account
+        + 8   // commit_slot
+        + 8   // total_bet_a
+        + 8   // total_bet_b
+        + 2   // total_bettors
+        + 1;  // bump
+}
+
 #[derive(AnchorSerialize, AnchorDeserialize, Clone, PartialEq)]
 pub enum BattleStatus {
     Pending,      // waiting for fighters
