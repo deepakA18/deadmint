@@ -22,3 +22,6 @@ anchor-lang = { version = "0.32.1", features = ["init-if-needed"] }
 anchor-spl = "0.32.1"
 ephemeral-vrf-sdk = { version = "0.2.1", features = ["anchor"] }
 
+[dev-dependencies]
+litesvm = "0.9.1"
+

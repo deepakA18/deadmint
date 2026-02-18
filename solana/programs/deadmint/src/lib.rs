@@ -17,6 +17,14 @@ declare_id!("CSAEZjQaAui4j3nQhbLBtwACf5BVK49V2MN61toztavW");
 pub mod deadmint {
     use super::*;
 
+    pub fn initialize_protocol_config(
+        ctx: Context<InitializeProtocolConfig>,
+        treasury: Pubkey,
+        protocol_fee_bps: u16,
+    ) -> Result<()> {
+        ctx.accounts.handle(treasury, protocol_fee_bps, &ctx.bumps)
+    }
+
     pub fn create_tournament(
         ctx: Context<CreateTournament>,
         name: String,

@@ -1,3 +1,4 @@
+pub mod initialize_protocol_config;
 pub mod create_tournament;
 pub mod register_fighter;
 pub mod start_battle;
@@ -7,6 +8,7 @@ pub mod claim_bet_winnings;
 pub mod claim_resurrection;
 pub mod advance_round;
 
+pub use initialize_protocol_config::*;
 pub use create_tournament::*;
 pub use register_fighter::*;
 pub use start_battle::*;
