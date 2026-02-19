@@ -2,75 +2,49 @@ use anchor_lang::prelude::*;
 
 #[error_code]
 pub enum ErrorCode {
-    // --- tournament creation ---
-    #[msg("Tournament name must be 1-32 characters")]
-    InvalidTournamentName,
-    #[msg("Bracket size must be 2, 4, 8, 16, or 32")]
-    InvalidBracketSize,
-    #[msg("Entry fee exceeds maximum (10 SOL)")]
-    EntryFeeTooHigh,
-    #[msg("Creator fee exceeds maximum (10%)")]
-    CreatorFeeTooHigh,
+    // ===== BOSS =====
+    #[msg("Boss name is empty or too long (max 32 chars)")]
+    InvalidBossName,
+    #[msg("Defense exceeds maximum allowed")]
+    DefenseTooHigh,
+    #[msg("Base price must be > 0")]
+    InvalidBasePrice,
+    #[msg("Slope must be > 0")]
+    InvalidSlope,
+    #[msg("Boss is not alive")]
+    BossNotAlive,
+    #[msg("Boss is still alive — cannot claim loot yet")]
+    BossStillAlive,
+
+    // ===== ATTACK =====
+    #[msg("Attack SOL amount must be > 0")]
+    ZeroAttackAmount,
+    #[msg("Player has a pending attack — wait for VRF callback")]
+    AttackPending,
+    #[msg("No pending attack to resolve")]
+    NoPendingAttack,
+
+    // ===== SELL =====
+    #[msg("Sell token amount must be > 0")]
+    ZeroSellAmount,
+    #[msg("Cannot sell more tokens than you hold")]
+    InsufficientTokens,
+    #[msg("Vault has insufficient SOL for this sell")]
+    InsufficientVaultBalance,
+
+    // ===== CLAIM =====
+    #[msg("Loot already claimed")]
+    AlreadyClaimed,
+    #[msg("No damage dealt — nothing to claim")]
+    NoDamageDealt,
+
+    // ===== PROTOCOL =====
     #[msg("Protocol is paused")]
     ProtocolPaused,
+    #[msg("Sell fee exceeds maximum")]
+    SellFeeTooHigh,
 
-    // --- fighter registration ---
-    #[msg("Registration is closed")]
-    RegistrationClosed,
-    #[msg("Tournament is full")]
-    TournamentFull,
-    #[msg("Fighter name must be 1-32 characters")]
-    InvalidFighterName,
-    #[msg("Fighter symbol must be 1-10 characters")]
-    InvalidFighterSymbol,
-    #[msg("Stats must be 0-100")]
-    InvalidStats,
-    #[msg("Deposit amount must be greater than 0")]
-    ZeroDeposit,
-    #[msg("Token mint does not match")]
-    MintMismatch,
-    #[msg("Token account owner does not match signer")]
-    TokenOwnerMismatch,
-
-    // --- battle ---
-    #[msg("Tournament is not active")]
-    TournamentNotActive,
-    #[msg("Fighter does not belong to this tournament")]
-    FighterTournamentMismatch,
-    #[msg("Fighter has been eliminated")]
-    FighterEliminated,
-    #[msg("Cannot battle a fighter against itself")]
-    SameFighter,
-    #[msg("Not enough fighters to start")]
-    NotEnoughFighters,
-    #[msg("Round does not match current tournament round")]
-    InvalidRound,
-
-    // --- betting ---
-    #[msg("Betting is closed for this battle")]
-    BettingClosed,
-    #[msg("Bet amount must be greater than 0")]
-    InvalidBetAmount,
-
-    // --- resolve battle ---
-    #[msg("Battle cannot be resolved in its current state")]
-    BattleNotResolvable,
-    #[msg("Fighter account does not match battle")]
-    FighterMismatch,
-
-    // --- advance round ---
-    #[msg("Battle has not been resolved yet")]
-    BattleNotResolved,
-
-    // --- claims ---
-    #[msg("Tournament is not complete")]
-    TournamentNotComplete,
-    #[msg("Not the tournament champion")]
-    NotChampion,
-    #[msg("Unauthorized")]
-    Unauthorized,
-    #[msg("Already claimed")]
-    AlreadyClaimed,
-    #[msg("Bet lost — backed the wrong fighter")]
-    BetLost,
+    // ===== MATH =====
+    #[msg("Math overflow")]
+    MathOverflow,
 }

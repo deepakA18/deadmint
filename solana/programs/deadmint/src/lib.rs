@@ -11,7 +11,7 @@ pub use constants::*;
 pub use instructions::*;
 pub use state::*;
 
-declare_id!("CSAEZjQaAui4j3nQhbLBtwACf5BVK49V2MN61toztavW");
+declare_id!("2cWsikqyKvpRT47qu48ysLAn8YEjyYsp4xzeEGQMowNs");
 
 #[program]
 pub mod deadmint {
@@ -25,83 +25,50 @@ pub mod deadmint {
         ctx.accounts.handle(treasury, protocol_fee_bps, &ctx.bumps)
     }
 
-    pub fn create_tournament(
-        ctx: Context<CreateTournament>,
+    pub fn create_boss(
+        ctx: Context<CreateBoss>,
+        id: u64,
         name: String,
-        tournament_id: u64,
-        max_fighters: Option<u8>,
-        entry_fee: Option<u64>,
-        creator_fee_bps: Option<u16>,
-        registration_seconds: Option<i64>,
+        max_hp: u64,
+        defense: u8,
+        base_price: u64,
+        slope: u64,
+        attack_fee_bps: u16,
+        sell_fee_bps: u16,
     ) -> Result<()> {
         ctx.accounts.handle(
-            name,
-            tournament_id,
-            max_fighters,
-            entry_fee,
-            creator_fee_bps,
-            registration_seconds,
+            id, name, max_hp, defense,
+            base_price, slope,
+            attack_fee_bps, sell_fee_bps,
             &ctx.bumps,
         )
     }
 
-    pub fn register_fighter(
-        ctx: Context<RegisterFighter>,
-        token_name: String,
-        token_symbol: String,
-        hp: u8,
-        atk: u8,
-        def: u8,
-        spd: u8,
-        luck: u8,
-        deposit_amount: u64,
+    pub fn commit_attack(
+        ctx: Context<CommitAttack>,
+        sol_amount: u64,
     ) -> Result<()> {
-        ctx.accounts.handle(
-            token_name,
-            token_symbol,
-            hp, atk, def, spd, luck,
-            deposit_amount,
-            &ctx.bumps,
-        )
-    }
-
-    pub fn start_battle(
-        ctx: Context<StartBattle>,
-        round: u8,
-        match_index: u8,
-    ) -> Result<()> {
-        ctx.accounts.handle(round, match_index, &ctx.bumps)
-    }
-
-    pub fn place_bet(
-        ctx: Context<PlaceBet>,
-        amount: u64,
-        backing_fighter_a: bool,
-    ) -> Result<()> {
-        ctx.accounts.handle(amount, backing_fighter_a, &ctx.bumps)
-    }
-
-    pub fn commit_battle(ctx: Context<CommitBattle>) -> Result<()> {
-        ctx.accounts.handle()
+        ctx.accounts.handle(sol_amount, &ctx.bumps)
     }
 
     /// VRF callback — called by MagicBlock VRF program, NOT by client
-    pub fn callback_resolve_battle(
-        ctx: Context<CallbackResolveBattle>,
+    pub fn callback_resolve_attack(
+        ctx: Context<CallbackResolveAttack>,
         randomness: [u8; 32],
     ) -> Result<()> {
         ctx.accounts.handle(randomness)
     }
 
-    pub fn advance_round(ctx: Context<AdvanceRound>) -> Result<()> {
-        ctx.accounts.handle()
+    pub fn sell(
+        ctx: Context<Sell>,
+        token_amount: u64,
+    ) -> Result<()> {
+        let vault_bump = ctx.bumps.boss_vault;
+        ctx.accounts.handle(token_amount, vault_bump)
     }
 
-    pub fn claim_bet_winnings(ctx: Context<ClaimBetWinnings>) -> Result<()> {
-        ctx.accounts.handle(&ctx.bumps)
-    }
-
-    pub fn claim_resurrection(ctx: Context<ClaimResurrection>) -> Result<()> {
-        ctx.accounts.handle()
+    pub fn claim_loot(ctx: Context<ClaimLoot>) -> Result<()> {
+        let vault_bump = ctx.bumps.boss_vault;
+        ctx.accounts.handle(vault_bump)
     }
 }
