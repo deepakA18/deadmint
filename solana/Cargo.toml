@@ -1,13 +1,21 @@
 [workspace]
 members = [
-    "programs/*"
+    "programs-ecs/components/*",
+    "programs-ecs/systems/*"
 ]
 resolver = "2"
+
+[workspace.dependencies]
+bolt-lang = { git = "https://github.com/magicblock-labs/bolt.git", branch = "main" }
+
+[patch.crates-io]
+session-keys = { path = "patches/session-keys" }
 
 [profile.release]
 overflow-checks = true
 lto = "fat"
 codegen-units = 1
+
 [profile.release.build-override]
 opt-level = 3
 incremental = false
