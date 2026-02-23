@@ -1,10 +1,10 @@
 {
-  "address": "Aup9nTYaxPfvXiu4jLzj4oQQXwkJe5CiyBixRb57wfZM",
+  "address": "Aj2fUK4fdw6Y6BCgtuUPsBL761AAgFjNjzt5Zd3Sp2Qb",
   "metadata": {
     "name": "deadmint",
     "version": "0.1.0",
     "spec": "0.1.0",
-    "description": "Deadmint - Financialized Bomberman on Solana"
+    "description": "Deadmint - Bomberman on Solana"
   },
   "instructions": [
     {

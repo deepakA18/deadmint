@@ -30,9 +30,12 @@ const pressStart = Press_Start_2P({
 });
 
 export const metadata: Metadata = {
-  title: "DEADMINT — Financialized Bomberman on Solana",
+  title: "Deadmint",
   description:
     "Wager SOL, destroy blocks, collect loot, bomb your opponents. Last one standing wins the pot.",
+  icons: {
+    icon: "/logo.svg",
+  },
 };
 
 export default function RootLayout({

@@ -286,12 +286,15 @@ export default function GamePage() {
           background: "var(--panel)",
         }}
       >
-        <h1
-          className="font-[family-name:var(--font-unifraktur)] text-xl text-glow-purple"
-          style={{ color: "var(--primary)" }}
-        >
-          Deadmint
-        </h1>
+        <div className="flex items-center gap-2">
+          <img src="/logo.svg" alt="" className="w-8 h-8" />
+          <h1
+            className="font-[family-name:var(--font-unifraktur)] text-xl text-glow-purple"
+            style={{ color: "var(--primary)" }}
+          >
+            Deadmint
+          </h1>
+        </div>
 
         {/* Inline stats */}
         <div className="flex items-center gap-4">
@@ -334,7 +337,7 @@ export default function GamePage() {
         <aside
           className="hidden xl:flex flex-col gap-2 p-3 flex-shrink-0"
           style={{
-            width: "200px",
+            width: "240px",
             borderRight: "3px solid var(--border-8bit)",
           }}
         >
@@ -365,9 +368,9 @@ export default function GamePage() {
 
         {/* Right sidebar - leaderboard */}
         <aside
-          className="hidden lg:flex flex-col p-3 flex-shrink-0"
+          className="hidden lg:flex flex-col p-3 flex-shrink-0 overflow-hidden"
           style={{
-            width: "200px",
+            width: "240px",
             borderLeft: "3px solid var(--border-8bit)",
           }}
         >
@@ -384,7 +387,7 @@ export default function GamePage() {
         }}
       >
         <div className="text-xs" style={{ color: "var(--muted-dark)" }}>
-          WASD MOVE &bull; SPACE BOMB
+          WASD / ARROWS MOVE &bull; SPACE BOMB
         </div>
 
         {/* Mobile player stats inline */}
@@ -460,6 +463,8 @@ export default function GamePage() {
         <GameOverModal
           gameState={gameState}
           localPlayerIndex={localPlayerIndex}
+          gamePda={liveConfig?.gamePda}
+          wallet={liveConfig?.wallet as any}
         />
       )}
     </div>

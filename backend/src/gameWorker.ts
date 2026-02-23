@@ -170,6 +170,21 @@ const PUBKEY_DEFAULT = PublicKey.default.toBase58();
 function toWireState(state: FetchedGameState): WireGameState {
   const g = state.game;
 
+  // Clear expired explosions in the wire state (on-chain only clears on
+  // next detonateBomb/movePlayer, so without this patch explosions persist
+  // visually if no one acts after a detonation).
+  const cells = Array.from(g.cells);
+  const lastDet = typeof g.lastDetonateSlot === "number"
+    ? g.lastDetonateSlot
+    : parseInt(g.lastDetonateSlot.toString());
+  if (lastDet > 0 && state.currentSlot > lastDet + EXPLOSION_DURATION_SLOTS) {
+    for (let i = 0; i < cells.length; i++) {
+      if (cells[i] === 4 /* CELL_EXPLOSION */) {
+        cells[i] = 0 /* CELL_EMPTY */;
+      }
+    }
+  }
+
   const config = {
     gameId: g.gameId.toString(),
     authority: pubkeyOrNull(g.authority),
@@ -188,7 +203,7 @@ function toWireState(state: FetchedGameState): WireGameState {
   };
 
   const grid = {
-    cells: Array.from(g.cells),
+    cells,
     powerupTypes: Array.from(g.powerupTypes),
   };
 

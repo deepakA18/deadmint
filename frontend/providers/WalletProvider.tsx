@@ -15,7 +15,12 @@ import { RPC_URL } from "@/lib/constants";
 import "@solana/wallet-adapter-react-ui/styles.css";
 
 export function WalletProvider({ children }: { children: React.ReactNode }) {
-  const endpoint = useMemo(() => RPC_URL, []);
+  const endpoint = useMemo(() => {
+    if (RPC_URL.startsWith("http")) return RPC_URL;
+    // Relative path like /api/rpc — construct absolute URL
+    if (typeof window !== "undefined") return `${window.location.origin}${RPC_URL}`;
+    return `http://localhost:3000${RPC_URL}`;
+  }, []);
   const wallets = useMemo(
     () => [new PhantomWalletAdapter(), new SolflareWalletAdapter()],
     []

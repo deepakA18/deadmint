@@ -17,7 +17,7 @@ export function Leaderboard({ players }: LeaderboardProps) {
   });
 
   return (
-    <div className="pixel-card p-3 w-48">
+    <div className="pixel-card p-3 w-full">
       <h3
         className="text-sm mb-1 text-center text-glow-purple"
         style={{ color: "var(--primary-light)" }}

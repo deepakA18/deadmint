@@ -4,17 +4,15 @@
 resolution = true
 skip-lint = false
 
-[programs.localnet]
-deadmint = "Aup9nTYaxPfvXiu4jLzj4oQQXwkJe5CiyBixRb57wfZM"
 
 [programs.devnet]
-deadmint = "Aup9nTYaxPfvXiu4jLzj4oQQXwkJe5CiyBixRb57wfZM"
+deadmint = "Aj2fUK4fdw6Y6BCgtuUPsBL761AAgFjNjzt5Zd3Sp2Qb"
 
 [registry]
 url = "https://api.apr.dev"
 
 [provider]
-cluster = "Localnet"
+cluster = "devnet"
 wallet = "~/.config/solana/id.json"
 
 [workspace]
@@ -30,6 +28,6 @@ upgradeable = false
 
 [test.validator]
 bind_address = "127.0.0.1"
-url = "https://api.devnet.solana.com"
+url = "https://devnet.helius-rpc.com/?api-key=90a86d9d-6820-4f75-9f5b-c8099b59eef9"
 ledger = ".anchor/test-ledger"
 rpc_port = 8899

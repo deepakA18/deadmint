@@ -130,6 +130,7 @@ export function useGameState({ mode, liveConfig }: UseGameStateOptions): UseGame
   const aiTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const wsRef = useRef<GameConnection | null>(null);
   const localPlayerFoundRef = useRef(false);
+  const explosionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // ─── LIVE MODE: WebSocket connection ───────────────────────
 
@@ -158,6 +159,28 @@ export function useGameState({ mode, liveConfig }: UseGameStateOptions): UseGame
           localPlayerFoundRef.current = true;
         }
       }
+
+      // Safety net: if state still has explosion cells, schedule a local
+      // cleanup after 2s. The backend already patches these out, but this
+      // catches edge cases (e.g. WS latency, direct RPC fallback).
+      const hasExplosions = state.grid.cells.some((c) => c === CELL_EXPLOSION);
+      if (hasExplosions) {
+        if (explosionTimerRef.current) clearTimeout(explosionTimerRef.current);
+        explosionTimerRef.current = setTimeout(() => {
+          setGameState((prev) => {
+            if (!prev) return prev;
+            const hasExp = prev.grid.cells.some((c) => c === CELL_EXPLOSION);
+            if (!hasExp) return prev;
+            const next = deepCloneState(prev);
+            for (let i = 0; i < GRID_CELLS; i++) {
+              if (next.grid.cells[i] === CELL_EXPLOSION) {
+                next.grid.cells[i] = CELL_EMPTY;
+              }
+            }
+            return next;
+          });
+        }, 2000);
+      }
     });
 
     wsRef.current = conn;
@@ -180,6 +203,7 @@ export function useGameState({ mode, liveConfig }: UseGameStateOptions): UseGame
 
     return () => {
       clearTimeout(fallbackTimer);
+      if (explosionTimerRef.current) clearTimeout(explosionTimerRef.current);
       conn.close();
       wsRef.current = null;
       localPlayerFoundRef.current = false;

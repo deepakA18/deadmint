@@ -2,13 +2,13 @@ import { PublicKey } from "@solana/web3.js";
 
 // --- Network ---
 export const RPC_URL =
-  process.env.NEXT_PUBLIC_RPC_URL || "https://api.devnet.solana.com";
+  process.env.NEXT_PUBLIC_RPC_URL || "/api/rpc";
 export const EPHEMERAL_RPC_URL =
   process.env.NEXT_PUBLIC_EPHEMERAL_RPC || "https://devnet.magicblock.app";
 
 // --- Program ID (single Anchor program) ---
 export const PROGRAM_ID = new PublicKey(
-  "Aup9nTYaxPfvXiu4jLzj4oQQXwkJe5CiyBixRb57wfZM"
+  "Aj2fUK4fdw6Y6BCgtuUPsBL761AAgFjNjzt5Zd3Sp2Qb"
 );
 
 // --- Grid ---

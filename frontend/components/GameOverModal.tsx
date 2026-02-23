@@ -1,21 +1,31 @@
 "use client";
 
+import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { PLAYER_COLORS, PLAYER_NAMES } from "@/lib/constants";
+import { PublicKey } from "@solana/web3.js";
+import { PLAYER_COLORS, PLAYER_NAMES, STATUS_CLAIMED } from "@/lib/constants";
 import { PixelButton } from "@/components/ui/PixelButton";
+import * as gameService from "@/lib/gameService";
 import type { FullGameState } from "@/lib/types";
 
 interface GameOverModalProps {
   gameState: FullGameState;
   localPlayerIndex: number;
+  gamePda?: PublicKey;
+  wallet?: gameService.WalletAdapter;
 }
 
 export function GameOverModal({
   gameState,
   localPlayerIndex,
+  gamePda,
+  wallet,
 }: GameOverModalProps) {
   const router = useRouter();
   const { players, config } = gameState;
+  const [claiming, setClaiming] = useState(false);
+  const [claimed, setClaimed] = useState(config.status >= STATUS_CLAIMED);
+  const [claimError, setClaimError] = useState<string | null>(null);
 
   // Find winner (last alive or most SOL)
   const alive = players.filter((p) => p.alive);
@@ -31,8 +41,30 @@ export function GameOverModal({
 
   const isLocalWinner = winnerIdx === localPlayerIndex;
   const prizePool = parseInt(config.prizePool.toString()) / 1e9;
-  const fee = prizePool * 0.03;
+  const fee = prizePool * (config.platformFeeBps / 10_000);
   const payout = prizePool - fee;
+
+  const canClaim = isLocalWinner && !claimed && !claiming && !!gamePda && !!wallet && prizePool > 0;
+
+  async function handleClaim() {
+    if (!gamePda || !wallet) return;
+    setClaiming(true);
+    setClaimError(null);
+    try {
+      const [playerPda] = gameService.derivePlayerPda(gamePda, localPlayerIndex);
+      await gameService.claimPrize(wallet, gamePda, playerPda);
+      setClaimed(true);
+    } catch (e: any) {
+      const msg = e?.message || "Claim failed";
+      if (msg.includes("AlreadyClaimed")) {
+        setClaimed(true);
+      } else {
+        setClaimError(msg.length > 60 ? msg.slice(0, 60) + "..." : msg);
+      }
+    } finally {
+      setClaiming(false);
+    }
+  }
 
   // Sort players by performance
   const sorted = [...players].sort((a, b) => {
@@ -90,7 +122,9 @@ export function GameOverModal({
               className="text-sm text-glow-gold"
               style={{ color: "var(--loot-gold)" }}
             >
-              THAT&apos;S YOU! PRIZE: {payout.toFixed(3)} SOL
+              {claimed
+                ? `CLAIMED ${payout.toFixed(3)} SOL!`
+                : `THAT\u0027S YOU! PRIZE: ${payout.toFixed(3)} SOL`}
             </p>
           )}
         </div>
@@ -147,11 +181,30 @@ export function GameOverModal({
           </div>
         </div>
 
+        {/* Claim Prize */}
+        {canClaim && (
+          <div className="mb-4 flex justify-center">
+            <PixelButton variant="primary" onClick={handleClaim}>
+              {claiming ? "CLAIMING..." : `CLAIM ${payout.toFixed(3)} SOL`}
+            </PixelButton>
+          </div>
+        )}
+        {claimed && isLocalWinner && (
+          <p className="text-center text-xs mb-4" style={{ color: "var(--sol-green)" }}>
+            PRIZE CLAIMED SUCCESSFULLY
+          </p>
+        )}
+        {claimError && (
+          <p className="text-center text-xs mb-4" style={{ color: "var(--explosion-red)" }}>
+            {claimError}
+          </p>
+        )}
+
         {/* Actions */}
         <div className="flex gap-4 justify-center">
           <PixelButton
             variant="primary"
-            onClick={() => router.push("/game/demo")}
+            onClick={() => { window.location.href = "/game/demo"; }}
           >
             PLAY AGAIN
           </PixelButton>
