@@ -1,15 +1,11 @@
 [workspace]
 members = [
-    "programs-ecs/components/*",
-    "programs-ecs/systems/*"
+    "programs/deadmint",
 ]
 resolver = "2"
 
 [workspace.dependencies]
-bolt-lang = { git = "https://github.com/magicblock-labs/bolt.git", branch = "main" }
-
-[patch.crates-io]
-session-keys = { path = "patches/session-keys" }
+anchor-lang = "0.32.1"
 
 [profile.release]
 overflow-checks = true

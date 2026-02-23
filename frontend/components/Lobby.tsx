@@ -192,7 +192,7 @@ export function Lobby() {
         <div className="pixel-separator w-full max-w-3xl mx-auto mb-6" />
         <div className="flex items-center justify-center gap-4">
           <span className="text-xs" style={{ color: "var(--muted-dark)" }}>
-            BUILT ON SOLANA WITH MAGICBLOCK BOLT ECS
+            BUILT ON SOLANA WITH ANCHOR
           </span>
           <span style={{ color: "var(--border-8bit)" }}>|</span>
           <span className="text-xs" style={{ color: "var(--muted-dark)" }}>

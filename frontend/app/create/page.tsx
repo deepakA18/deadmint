@@ -1,13 +1,76 @@
 "use client";
 
+import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { useWallet } from "@solana/wallet-adapter-react";
+import BN from "bn.js";
 import { GraveyardBackground } from "@/components/GraveyardBackground";
 import { ThemeSelector } from "@/components/ThemeSelector";
 import { WalletButton } from "@/components/WalletButton";
 import { PixelButton } from "@/components/ui/PixelButton";
+import { createGameAndJoin, getBaseConnection } from "@/lib/gameService";
+import { getOrCreateSessionKey, fundSessionKey } from "@/lib/sessionKey";
+import { saveGame } from "@/app/games/page";
+import { registerGameWithBackend } from "@/lib/backendWs";
 
 export default function CreateGamePage() {
   const router = useRouter();
+  const wallet = useWallet();
+  const [entryFee, setEntryFee] = useState(0.05);
+  const [maxPlayers, setMaxPlayers] = useState(4);
+  const [isCreating, setIsCreating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const estimatedPool = (entryFee * maxPlayers).toFixed(2);
+
+  async function handleCreate() {
+    if (!wallet.publicKey || !wallet.sendTransaction) {
+      setError("Please connect your wallet first");
+      return;
+    }
+    setError(null);
+    setIsCreating(true);
+    try {
+      const walletAdapter = { publicKey: wallet.publicKey, signTransaction: wallet.signTransaction, sendTransaction: wallet.sendTransaction };
+      const entryFeeLamports = new BN(Math.floor(entryFee * 1e9));
+
+      // Generate session key — player authority on-chain will be this key
+      const sessionKey = getOrCreateSessionKey(wallet.publicKey);
+      const result = await createGameAndJoin(walletAdapter, entryFeeLamports, maxPlayers, sessionKey.publicKey);
+
+      // Fund session key with small SOL for base-layer tx fees
+      try {
+        await fundSessionKey(walletAdapter, getBaseConnection(), sessionKey);
+      } catch (e) {
+        console.warn("Session key funding skipped:", e);
+      }
+
+      // Register with backend for cranking (best-effort)
+      registerGameWithBackend(
+        result.gamePda.toBase58(),
+        result.gameId.toString(),
+        maxPlayers
+      );
+
+      // Save to localStorage for game discovery
+      saveGame(
+        result.gamePda.toBase58(),
+        result.gameId.toString(),
+        maxPlayers
+      );
+      // Navigate to game page
+      const params = new URLSearchParams({
+        game: result.gamePda.toBase58(),
+        maxPlayers: maxPlayers.toString(),
+      });
+      router.push(`/game/${result.gameId.toString()}?${params.toString()}`);
+    } catch (e: unknown) {
+      console.error("Create game failed:", e);
+      setError(e instanceof Error ? e.message : "Failed to create game");
+    } finally {
+      setIsCreating(false);
+    }
+  }
 
   return (
     <div className="relative min-h-screen">
@@ -55,7 +118,8 @@ export default function CreateGamePage() {
             <div className="flex items-center gap-3">
               <input
                 type="number"
-                defaultValue="0.05"
+                value={entryFee}
+                onChange={(e) => setEntryFee(parseFloat(e.target.value) || 0)}
                 step="0.01"
                 min="0.01"
                 className="w-full px-4 py-3 text-sm"
@@ -87,38 +151,19 @@ export default function CreateGamePage() {
               {[2, 3, 4].map((n) => (
                 <button
                   key={n}
+                  onClick={() => setMaxPlayers(n)}
                   className="flex-1 py-3 text-sm text-center transition-colors"
                   style={{
                     backgroundColor:
-                      n === 4 ? "var(--primary-dark)" : "var(--background)",
-                    border: `3px solid ${n === 4 ? "var(--primary)" : "var(--border-8bit)"}`,
+                      n === maxPlayers ? "var(--primary-dark)" : "var(--background)",
+                    border: `3px solid ${n === maxPlayers ? "var(--primary)" : "var(--border-8bit)"}`,
                     color:
-                      n === 4 ? "var(--foreground)" : "var(--muted-dark)",
+                      n === maxPlayers ? "var(--foreground)" : "var(--muted-dark)",
                   }}
                 >
                   {n}
                 </button>
               ))}
-            </div>
-          </div>
-
-          {/* Round Duration */}
-          <div className="mb-8">
-            <label
-              className="block text-xs mb-2"
-              style={{ color: "var(--muted)" }}
-            >
-              ROUND DURATION
-            </label>
-            <div
-              className="px-4 py-3 text-sm"
-              style={{
-                backgroundColor: "var(--background)",
-                border: "3px solid var(--border-8bit)",
-                color: "var(--muted-dark)",
-              }}
-            >
-              120 SECONDS
             </div>
           </div>
 
@@ -134,27 +179,47 @@ export default function CreateGamePage() {
               ESTIMATED PRIZE POOL
             </span>
             <span className="text-lg" style={{ color: "var(--sol-green)" }}>
-              0.20 SOL
+              {estimatedPool} SOL
             </span>
             <span className="text-xs block mt-1" style={{ color: "var(--muted-dark)" }}>
-              (4 × 0.05 SOL)
+              ({maxPlayers} × {entryFee.toFixed(2)} SOL)
             </span>
           </div>
+
+          {/* Error */}
+          {error && (
+            <div
+              className="mb-4 p-3 text-xs text-center"
+              style={{
+                backgroundColor: "color-mix(in srgb, var(--explosion-red) 15%, transparent)",
+                border: "2px solid var(--explosion-red)",
+                color: "var(--explosion-red)",
+              }}
+            >
+              {error}
+            </div>
+          )}
 
           {/* Create Button */}
           <PixelButton
             variant="primary"
             size="lg"
             className="w-full"
+            onClick={handleCreate}
+            disabled={isCreating}
           >
-            {"\u2620"} CREATE GAME {"\u2620"}
+            {isCreating
+              ? "CREATING & JOINING..."
+              : `\u2620 CREATE GAME \u2620`}
           </PixelButton>
 
           <p
             className="text-xs mt-4 text-center"
             style={{ color: "var(--muted-dark)" }}
           >
-            REQUIRES WALLET CONNECTION
+            {wallet.publicKey
+              ? `WALLET: ${wallet.publicKey.toBase58().slice(0, 4)}...${wallet.publicKey.toBase58().slice(-4)}`
+              : "CONNECT WALLET TO CREATE"}
           </p>
         </div>
 

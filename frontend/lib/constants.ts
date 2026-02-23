@@ -5,45 +5,10 @@ export const RPC_URL =
   process.env.NEXT_PUBLIC_RPC_URL || "https://api.devnet.solana.com";
 export const EPHEMERAL_RPC_URL =
   process.env.NEXT_PUBLIC_EPHEMERAL_RPC || "https://devnet.magicblock.app";
-export const WORLD_PROGRAM_ID = new PublicKey(
-  "WorLD15A7CrDwLcLy4fRqtaTb9fbd8o8iqiEMUDse2n"
-);
 
-// --- Component Program IDs ---
-export const GAME_CONFIG_ID = new PublicKey(
-  "919ULGHVd8Ei2NCeCg3zfpNrCg5QKNh6dJtnTLdRp8DP"
-);
-export const GRID_ID = new PublicKey(
-  "B6aeQFgTVwCfjQiiDXbiZxcZbCBzzSFQV8h9CBDx1QqF"
-);
-export const PLAYER_ID = new PublicKey(
-  "22jhJmsR9JDRbbzy6TLuGkr7jMjSAgwMKtG2SJ3oATew"
-);
-export const BOMB_ID = new PublicKey(
-  "HPyYmnUfG2a1zhLMibMZGVF9UP8xcBvCKLU4e9FnYhu4"
-);
-
-// --- System Program IDs ---
-export const INIT_GAME_ID = new PublicKey(
-  "6LRsvRNMA9uFa3XnKi4tswXrgsJPzhGEaCQSCcc6tdht"
-);
-export const JOIN_GAME_ID = new PublicKey(
-  "B5KDtjkRhhGkUKmaZAyPDjeLF6bTBSxWrVu4pjHBpmvN"
-);
-export const MOVE_PLAYER_ID = new PublicKey(
-  "F7qDssjJp9USkMakyj8FbnyuV5HR2CMGP8PRx6bmL89T"
-);
-export const PLACE_BOMB_ID = new PublicKey(
-  "69QgbvubUeQ8V335u1pdpECXoMu3UU9Xp1sZtCGKH17T"
-);
-export const DETONATE_BOMB_ID = new PublicKey(
-  "D9yXnYNNPUc4SGMZsxydYcFp1np7WPXnEB8Vvati8c6D"
-);
-export const CHECK_GAME_END_ID = new PublicKey(
-  "7z2CQjGyDAv3REvjj1Y19sKM9edgE9tB3QFD8pAAji3N"
-);
-export const CLAIM_PRIZE_ID = new PublicKey(
-  "HSFH8eHW5cXpaCTsseCvrya6D4qfa98rXt4kC8S7nAAg"
+// --- Program ID (single Anchor program) ---
+export const PROGRAM_ID = new PublicKey(
+  "Aup9nTYaxPfvXiu4jLzj4oQQXwkJe5CiyBixRb57wfZM"
 );
 
 // --- Grid ---

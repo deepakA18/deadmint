@@ -6,19 +6,14 @@ import type { FullGameState } from "@/lib/types";
 interface GameHUDProps {
   gameState: FullGameState;
   localPlayerIndex: number;
-  timeLeft: number;
 }
 
 export function GameHUD({
   gameState,
   localPlayerIndex,
-  timeLeft,
 }: GameHUDProps) {
   const { config, players } = gameState;
   const prizePool = parseInt(config.prizePool.toString()) / 1e9;
-  const minutes = Math.floor(timeLeft / 60);
-  const seconds = timeLeft % 60;
-  const isLowTime = timeLeft < 30;
 
   return (
     <div className="flex flex-col gap-3 w-full">
@@ -34,17 +29,6 @@ export function GameHUD({
               style={{ color: "var(--sol-green)" }}
             >
               {prizePool.toFixed(2)} SOL
-            </span>
-          </div>
-          <div className="flex items-center justify-between">
-            <span className="text-[10px]" style={{ color: "var(--muted)" }}>
-              TIME
-            </span>
-            <span
-              className={`text-xs ${isLowTime ? "text-glow-red" : ""}`}
-              style={{ color: isLowTime ? "var(--explosion-red)" : "var(--foreground)" }}
-            >
-              {minutes}:{seconds.toString().padStart(2, "0")}
             </span>
           </div>
           <div className="flex items-center justify-between">

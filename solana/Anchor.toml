@@ -5,47 +5,31 @@ resolution = true
 skip-lint = false
 
 [programs.localnet]
-game_config = "919ULGHVd8Ei2NCeCg3zfpNrCg5QKNh6dJtnTLdRp8DP"
-grid = "B6aeQFgTVwCfjQiiDXbiZxcZbCBzzSFQV8h9CBDx1QqF"
-player = "22jhJmsR9JDRbbzy6TLuGkr7jMjSAgwMKtG2SJ3oATew"
-bomb = "HPyYmnUfG2a1zhLMibMZGVF9UP8xcBvCKLU4e9FnYhu4"
-init_game = "6LRsvRNMA9uFa3XnKi4tswXrgsJPzhGEaCQSCcc6tdht"
-join_game = "B5KDtjkRhhGkUKmaZAyPDjeLF6bTBSxWrVu4pjHBpmvN"
-move_player = "F7qDssjJp9USkMakyj8FbnyuV5HR2CMGP8PRx6bmL89T"
-place_bomb = "69QgbvubUeQ8V335u1pdpECXoMu3UU9Xp1sZtCGKH17T"
-detonate_bomb = "D9yXnYNNPUc4SGMZsxydYcFp1np7WPXnEB8Vvati8c6D"
-check_game_end = "7z2CQjGyDAv3REvjj1Y19sKM9edgE9tB3QFD8pAAji3N"
-claim_prize = "HSFH8eHW5cXpaCTsseCvrya6D4qfa98rXt4kC8S7nAAg"
+deadmint = "Aup9nTYaxPfvXiu4jLzj4oQQXwkJe5CiyBixRb57wfZM"
+
+[programs.devnet]
+deadmint = "Aup9nTYaxPfvXiu4jLzj4oQQXwkJe5CiyBixRb57wfZM"
 
 [registry]
 url = "https://api.apr.dev"
 
 [provider]
-cluster = "localnet"
+cluster = "Localnet"
 wallet = "~/.config/solana/id.json"
 
 [workspace]
-members = ["programs-ecs/components/*", "programs-ecs/systems/*"]
+members = ["programs/deadmint"]
 
 [scripts]
-test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/**/*.ts"
+test = "yarn run ts-mocha -p ./tsconfig.json -t 1000000 tests/deadmint-anchor.ts"
 
 [test]
 startup_wait = 5000
 shutdown_wait = 2000
 upgradeable = false
 
-[[test.genesis]]
-address = "WorLD15A7CrDwLcLy4fRqtaTb9fbd8o8iqiEMUDse2n"
-program = "tests/fixtures/world.so"
-upgradeable = false
-
 [test.validator]
 bind_address = "127.0.0.1"
-url = "https://rpc.magicblock.app/devnet/"
-ledger = ".bolt/test-ledger"
+url = "https://api.devnet.solana.com"
+ledger = ".anchor/test-ledger"
 rpc_port = 8899
-
-[[test.validator.account]]
-address = "EHLkWwAT9oebVv9ht3mtqrvHhRVMKrt54tF3MfHTey2K"
-filename = "tests/fixtures/registry.json"

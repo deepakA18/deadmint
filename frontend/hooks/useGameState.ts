@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useCallback, useRef, useEffect } from "react";
-import { PublicKey } from "@solana/web3.js";
+import { Keypair, PublicKey } from "@solana/web3.js";
 import BN from "bn.js";
 import {
   GRID_WIDTH,
@@ -27,11 +27,28 @@ import type {
   GameConfig,
   GridState,
   PlayerState,
-  BombState,
 } from "@/lib/types";
+import * as gameService from "@/lib/gameService";
+import { derivePlayerPda } from "@/lib/gameService";
+import { connectToGame, type GameConnection } from "@/lib/backendWs";
+
+// ─── Types ────────────────────────────────────────────────
+
+export interface LiveModeConfig {
+  gamePda: PublicKey;
+  maxPlayers: number;
+  localPlayerIndex?: number;
+  wallet: {
+    publicKey: PublicKey;
+    signTransaction?: (tx: import("@solana/web3.js").Transaction) => Promise<import("@solana/web3.js").Transaction>;
+    sendTransaction: (...args: Parameters<gameService.WalletAdapter["sendTransaction"]>) => ReturnType<gameService.WalletAdapter["sendTransaction"]>;
+  };
+  sessionKey?: Keypair;
+}
 
 interface UseGameStateOptions {
   mode: "mock" | "live";
+  liveConfig?: LiveModeConfig;
 }
 
 interface UseGameStateReturn {
@@ -40,6 +57,7 @@ interface UseGameStateReturn {
   movePlayer: (direction: number) => void;
   placeBomb: () => void;
   isLoading: boolean;
+  isLocalPlayerDead: boolean;
 }
 
 // ─── Spawn safe zone check (same as Rust) ─────────────────
@@ -105,15 +123,112 @@ function isWalkable(cell: number): boolean {
 
 // ─── Hook ─────────────────────────────────────────────────
 
-export function useGameState({ mode }: UseGameStateOptions): UseGameStateReturn {
+export function useGameState({ mode, liveConfig }: UseGameStateOptions): UseGameStateReturn {
   const [gameState, setGameState] = useState<FullGameState | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const localPlayerIndex = 0;
+  const [localPlayerIndex, setLocalPlayerIndex] = useState(0);
   const aiTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const timeLeftRef = useRef(180);
+  const wsRef = useRef<GameConnection | null>(null);
+  const localPlayerFoundRef = useRef(false);
 
-  // Initialize mock game
+  // ─── LIVE MODE: WebSocket connection ───────────────────────
+
+  useEffect(() => {
+    if (mode !== "live" || !liveConfig) return;
+
+    const gamePdaStr = liveConfig.gamePda.toBase58();
+    const matchPubkey = liveConfig.sessionKey
+      ? liveConfig.sessionKey.publicKey
+      : liveConfig.wallet.publicKey;
+
+    const conn = connectToGame(gamePdaStr, (state) => {
+      setGameState(state);
+      setIsLoading(false);
+
+      // Find local player index (only search until found)
+      if (!localPlayerFoundRef.current) {
+        const idx = state.players.findIndex(
+          (p) =>
+            p.authority &&
+            matchPubkey &&
+            p.authority.toBase58() === matchPubkey.toBase58()
+        );
+        if (idx !== -1) {
+          setLocalPlayerIndex(idx);
+          localPlayerFoundRef.current = true;
+        }
+      }
+    });
+
+    wsRef.current = conn;
+
+    // Fallback: fetch initial state via RPC if WS takes too long
+    const fallbackTimer = setTimeout(async () => {
+      try {
+        const connection = gameService.getBaseConnection();
+        const state = await gameService.fetchFullGameState(
+          connection,
+          liveConfig.gamePda,
+          liveConfig.maxPlayers
+        );
+        if (state) {
+          setGameState(state);
+          setIsLoading(false);
+        }
+      } catch {}
+    }, 3000);
+
+    return () => {
+      clearTimeout(fallbackTimer);
+      conn.close();
+      wsRef.current = null;
+      localPlayerFoundRef.current = false;
+    };
+  }, [mode, liveConfig?.gamePda.toBase58()]);
+
+  // Live move player (simplified — no crank, backend handles detonation)
+  const liveMove = useCallback(
+    async (direction: number) => {
+      if (!liveConfig || !gameState || gameState.config.status !== STATUS_ACTIVE) return;
+      const localPlayer = gameState.players[localPlayerIndex];
+      if (!localPlayer || !localPlayer.alive) return;
+      try {
+        const signer: gameService.Signer = liveConfig.sessionKey || liveConfig.wallet;
+        const [localPlayerPda] = derivePlayerPda(liveConfig.gamePda, localPlayerIndex);
+        await gameService.movePlayer(
+          signer,
+          liveConfig.gamePda,
+          localPlayerPda,
+          direction,
+        );
+      } catch (e) {
+        console.error("Move failed:", e);
+      }
+    },
+    [liveConfig, gameState, localPlayerIndex]
+  );
+
+  // Live place bomb
+  const livePlaceBomb = useCallback(async () => {
+    if (!liveConfig || !gameState || gameState.config.status !== STATUS_ACTIVE) return;
+    const p = gameState.players[localPlayerIndex];
+    if (!p || !p.alive || p.activeBombs >= p.maxBombs) return;
+
+    try {
+      const signer: gameService.Signer = liveConfig.sessionKey || liveConfig.wallet;
+      const [localPlayerPda] = derivePlayerPda(liveConfig.gamePda, localPlayerIndex);
+      await gameService.placeBomb(
+        signer,
+        liveConfig.gamePda,
+        localPlayerPda,
+      );
+    } catch (e) {
+      console.error("Place bomb failed:", e);
+    }
+  }, [liveConfig, gameState, localPlayerIndex]);
+
+  // ─── MOCK MODE ────────────────────────────────────────────
+
   useEffect(() => {
     if (mode !== "mock") return;
 
@@ -130,7 +245,7 @@ export function useGameState({ mode }: UseGameStateOptions): UseGameStateReturn 
       winner: null,
       createdAt: new BN(Math.floor(Date.now() / 1000)),
       startedAt: new BN(Math.floor(Date.now() / 1000)),
-      roundDuration: 180,
+      roundDuration: 0,
       platformFeeBps: 300,
     };
 
@@ -145,41 +260,6 @@ export function useGameState({ mode }: UseGameStateOptions): UseGameStateReturn 
     setIsLoading(false);
   }, [mode]);
 
-  // Countdown timer
-  useEffect(() => {
-    if (mode !== "mock" || !gameState || gameState.config.status !== STATUS_ACTIVE) return;
-
-    timerRef.current = setInterval(() => {
-      timeLeftRef.current--;
-      if (timeLeftRef.current <= 0) {
-        setGameState((prev) => {
-          if (!prev) return prev;
-          return {
-            ...prev,
-            config: { ...prev.config, status: STATUS_FINISHED },
-          };
-        });
-      }
-      // Update startedAt to reflect timer (for HUD calculation)
-      setGameState((prev) => {
-        if (!prev) return prev;
-        return {
-          ...prev,
-          config: {
-            ...prev.config,
-            startedAt: new BN(
-              Math.floor(Date.now() / 1000) - (180 - timeLeftRef.current)
-            ),
-          },
-        };
-      });
-    }, 1000);
-
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current);
-    };
-  }, [mode, gameState?.config.status]);
-
   // AI players
   useEffect(() => {
     if (mode !== "mock" || !gameState || gameState.config.status !== STATUS_ACTIVE) return;
@@ -193,34 +273,18 @@ export function useGameState({ mode }: UseGameStateOptions): UseGameStateReturn 
           const p = next.players[i];
           if (!p.alive) continue;
 
-          // Random movement
           const dirs = [DIR_UP, DIR_DOWN, DIR_LEFT, DIR_RIGHT];
           const shuffled = dirs.sort(() => Math.random() - 0.5);
           for (const dir of shuffled) {
             const [nx, ny] = getNewPos(p.x, p.y, dir);
-            if (
-              nx >= 0 &&
-              nx < GRID_WIDTH &&
-              ny >= 0 &&
-              ny < GRID_HEIGHT
-            ) {
+            if (nx >= 0 && nx < GRID_WIDTH && ny >= 0 && ny < GRID_HEIGHT) {
               const idx = ny * GRID_WIDTH + nx;
               const cell = next.grid.cells[idx];
-              if (cell === CELL_EXPLOSION) {
-                continue; // AI avoids explosions
-              }
-              if (cell === CELL_BOMB) {
-                continue; // AI avoids bombs
-              }
+              if (cell === CELL_EXPLOSION || cell === CELL_BOMB) continue;
               if (isWalkable(cell)) {
-                // Handle loot/powerup pickup
                 if (cell === CELL_LOOT) {
-                  const loot = Math.floor(
-                    parseInt(next.config.prizePool.toString()) / 50
-                  );
-                  p.collectedSol = new BN(
-                    parseInt(p.collectedSol.toString()) + Math.max(loot, 1000)
-                  );
+                  const loot = Math.floor(parseInt(next.config.prizePool.toString()) / 50);
+                  p.collectedSol = new BN(parseInt(p.collectedSol.toString()) + Math.max(loot, 1000));
                   next.grid.cells[idx] = CELL_EMPTY;
                 } else if (cell === CELL_POWERUP) {
                   applyPowerup(p, next.grid.powerupTypes[idx]);
@@ -234,28 +298,20 @@ export function useGameState({ mode }: UseGameStateOptions): UseGameStateReturn 
             }
           }
 
-          // 15% chance to place bomb near destructible blocks
           if (Math.random() < 0.15 && p.activeBombs < p.maxBombs) {
-            const nearBlock = hasAdjacentBlock(
-              next.grid.cells,
-              p.x,
-              p.y
-            );
+            const nearBlock = hasAdjacentBlock(next.grid.cells, p.x, p.y);
             if (nearBlock) {
               const pidx = p.y * GRID_WIDTH + p.x;
               if (next.grid.cells[pidx] === CELL_EMPTY) {
                 next.grid.cells[pidx] = CELL_BOMB;
                 p.activeBombs++;
-                // Schedule detonation
                 scheduleBombDetonation(pidx, p.bombRange, i);
               }
             }
           }
         }
 
-        // Check for player deaths from explosions
         checkPlayerDeaths(next);
-
         return next;
       });
     }, 600);
@@ -265,7 +321,6 @@ export function useGameState({ mode }: UseGameStateOptions): UseGameStateReturn 
     };
   }, [mode, gameState?.config.status]);
 
-  // Bomb detonation scheduling
   const scheduleBombDetonation = useCallback(
     (cellIdx: number, range: number, ownerIdx: number) => {
       setTimeout(() => {
@@ -275,21 +330,14 @@ export function useGameState({ mode }: UseGameStateOptions): UseGameStateReturn 
 
           if (next.grid.cells[cellIdx] !== CELL_BOMB) return next;
 
-          // Detonate
           detonateBombAt(next, cellIdx, range, ownerIdx);
 
-          // Decrease active bombs
           if (next.players[ownerIdx]) {
-            next.players[ownerIdx].activeBombs = Math.max(
-              0,
-              next.players[ownerIdx].activeBombs - 1
-            );
+            next.players[ownerIdx].activeBombs = Math.max(0, next.players[ownerIdx].activeBombs - 1);
           }
 
-          // Check deaths
           checkPlayerDeaths(next);
 
-          // Clear explosions after 500ms
           setTimeout(() => {
             setGameState((prev2) => {
               if (!prev2) return prev2;
@@ -310,11 +358,8 @@ export function useGameState({ mode }: UseGameStateOptions): UseGameStateReturn 
     []
   );
 
-  // Player move
-  const movePlayer = useCallback(
+  const mockMove = useCallback(
     (direction: number) => {
-      if (mode !== "mock") return;
-
       setGameState((prev) => {
         if (!prev || prev.config.status !== STATUS_ACTIVE) return prev;
         const next = deepCloneState(prev);
@@ -328,7 +373,6 @@ export function useGameState({ mode }: UseGameStateOptions): UseGameStateReturn 
         const cell = next.grid.cells[idx];
 
         if (cell === CELL_EXPLOSION) {
-          // Player walks into explosion — death
           p.alive = false;
           checkGameEnd(next);
           return next;
@@ -336,18 +380,12 @@ export function useGameState({ mode }: UseGameStateOptions): UseGameStateReturn 
 
         if (!isWalkable(cell)) return prev;
 
-        // Loot pickup
         if (cell === CELL_LOOT) {
-          const loot = Math.floor(
-            parseInt(next.config.prizePool.toString()) / 50
-          );
-          p.collectedSol = new BN(
-            parseInt(p.collectedSol.toString()) + Math.max(loot, 1000)
-          );
+          const loot = Math.floor(parseInt(next.config.prizePool.toString()) / 50);
+          p.collectedSol = new BN(parseInt(p.collectedSol.toString()) + Math.max(loot, 1000));
           next.grid.cells[idx] = CELL_EMPTY;
         }
 
-        // Powerup pickup
         if (cell === CELL_POWERUP) {
           applyPowerup(p, next.grid.powerupTypes[idx]);
           next.grid.cells[idx] = CELL_EMPTY;
@@ -359,13 +397,10 @@ export function useGameState({ mode }: UseGameStateOptions): UseGameStateReturn 
         return next;
       });
     },
-    [mode]
+    [localPlayerIndex]
   );
 
-  // Place bomb
-  const placeBomb = useCallback(() => {
-    if (mode !== "mock") return;
-
+  const mockPlaceBomb = useCallback(() => {
     setGameState((prev) => {
       if (!prev || prev.config.status !== STATUS_ACTIVE) return prev;
       const next = deepCloneState(prev);
@@ -377,54 +412,62 @@ export function useGameState({ mode }: UseGameStateOptions): UseGameStateReturn 
 
       next.grid.cells[idx] = CELL_BOMB;
       p.activeBombs++;
-
       scheduleBombDetonation(idx, p.bombRange, localPlayerIndex);
 
       return next;
     });
-  }, [mode, scheduleBombDetonation]);
+  }, [localPlayerIndex, scheduleBombDetonation]);
 
-  return { gameState, localPlayerIndex, movePlayer, placeBomb, isLoading };
+  // ─── Dispatch based on mode ─────────────────────────────
+
+  const movePlayer = useCallback(
+    (direction: number) => {
+      if (mode === "live") {
+        liveMove(direction);
+      } else {
+        mockMove(direction);
+      }
+    },
+    [mode, liveMove, mockMove]
+  );
+
+  const placeBomb = useCallback(() => {
+    if (mode === "live") {
+      livePlaceBomb();
+    } else {
+      mockPlaceBomb();
+    }
+  }, [mode, livePlaceBomb, mockPlaceBomb]);
+
+  const isLocalPlayerDead = gameState
+    ? !gameState.players[localPlayerIndex]?.alive
+    : false;
+
+  return { gameState, localPlayerIndex, movePlayer, placeBomb, isLoading, isLocalPlayerDead };
 }
 
 // ─── Utility Functions ────────────────────────────────────
 
 function getNewPos(x: number, y: number, dir: number): [number, number] {
   switch (dir) {
-    case DIR_UP:
-      return [x, y - 1];
-    case DIR_DOWN:
-      return [x, y + 1];
-    case DIR_LEFT:
-      return [x - 1, y];
-    case DIR_RIGHT:
-      return [x + 1, y];
-    default:
-      return [x, y];
+    case DIR_UP: return [x, y - 1];
+    case DIR_DOWN: return [x, y + 1];
+    case DIR_LEFT: return [x - 1, y];
+    case DIR_RIGHT: return [x + 1, y];
+    default: return [x, y];
   }
 }
 
 function applyPowerup(player: PlayerState, type: number) {
   switch (type) {
-    case 1: // bomb range
-      player.bombRange = Math.min(5, player.bombRange + 1);
-      break;
-    case 2: // extra bomb
-      player.maxBombs = Math.min(3, player.maxBombs + 1);
-      break;
-    case 3: // speed
-      player.speed = Math.min(3, player.speed + 1);
-      break;
+    case 1: player.bombRange = Math.min(5, player.bombRange + 1); break;
+    case 2: player.maxBombs = Math.min(3, player.maxBombs + 1); break;
+    case 3: player.speed = Math.min(3, player.speed + 1); break;
   }
 }
 
 function hasAdjacentBlock(cells: number[], x: number, y: number): boolean {
-  const dirs = [
-    [0, -1],
-    [0, 1],
-    [-1, 0],
-    [1, 0],
-  ];
+  const dirs = [[0, -1], [0, 1], [-1, 0], [1, 0]];
   for (const [dx, dy] of dirs) {
     const nx = x + dx;
     const ny = y + dy;
@@ -435,38 +478,25 @@ function hasAdjacentBlock(cells: number[], x: number, y: number): boolean {
   return false;
 }
 
-function detonateBombAt(
-  state: FullGameState,
-  cellIdx: number,
-  range: number,
-  _ownerIdx: number
-) {
+function detonateBombAt(state: FullGameState, cellIdx: number, range: number, _ownerIdx: number) {
   const bx = cellIdx % GRID_WIDTH;
   const by = Math.floor(cellIdx / GRID_WIDTH);
 
   state.grid.cells[cellIdx] = CELL_EXPLOSION;
 
-  const directions: [number, number][] = [
-    [0, -1],
-    [0, 1],
-    [-1, 0],
-    [1, 0],
-  ];
+  const directions: [number, number][] = [[0, -1], [0, 1], [-1, 0], [1, 0]];
 
   for (const [dx, dy] of directions) {
     for (let dist = 1; dist <= range; dist++) {
       const nx = bx + dx * dist;
       const ny = by + dy * dist;
-
       if (nx < 0 || nx >= GRID_WIDTH || ny < 0 || ny >= GRID_HEIGHT) break;
 
       const idx = ny * GRID_WIDTH + nx;
       const cell = state.grid.cells[idx];
 
       if (cell === CELL_WALL) break;
-
       if (cell === CELL_BLOCK) {
-        // Destroy block with random loot
         const roll = Math.random() * 100;
         if (roll < 40) {
           state.grid.cells[idx] = CELL_LOOT;
@@ -476,15 +506,12 @@ function detonateBombAt(
         } else {
           state.grid.cells[idx] = CELL_EMPTY;
         }
-        break; // Explosion stops at first block
+        break;
       }
-
       if (cell === CELL_BOMB) {
-        // Chain reaction
         state.grid.cells[idx] = CELL_EXPLOSION;
         break;
       }
-
       state.grid.cells[idx] = CELL_EXPLOSION;
     }
   }

@@ -1,0 +1,721 @@
+{
+  "address": "Aup9nTYaxPfvXiu4jLzj4oQQXwkJe5CiyBixRb57wfZM",
+  "metadata": {
+    "name": "deadmint",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "Deadmint - Financialized Bomberman on Solana"
+  },
+  "instructions": [
+    {
+      "name": "check_game_end",
+      "discriminator": [
+        86,
+        79,
+        62,
+        221,
+        255,
+        185,
+        211,
+        253
+      ],
+      "accounts": [
+        {
+          "name": "game",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  103,
+                  97,
+                  109,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "game.game_id",
+                "account": "Game"
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "signer": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "claim_prize",
+      "discriminator": [
+        157,
+        233,
+        139,
+        121,
+        246,
+        62,
+        234,
+        235
+      ],
+      "accounts": [
+        {
+          "name": "game",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  103,
+                  97,
+                  109,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "game.game_id",
+                "account": "Game"
+              }
+            ]
+          }
+        },
+        {
+          "name": "player"
+        },
+        {
+          "name": "winner",
+          "docs": [
+            "The winner's wallet (receives SOL payout)"
+          ],
+          "writable": true,
+          "signer": true
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "detonate_bomb",
+      "discriminator": [
+        33,
+        102,
+        122,
+        203,
+        170,
+        213,
+        123,
+        58
+      ],
+      "accounts": [
+        {
+          "name": "game",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  103,
+                  97,
+                  109,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "game.game_id",
+                "account": "Game"
+              }
+            ]
+          }
+        },
+        {
+          "name": "authority",
+          "docs": [
+            "Anyone can call detonate (crank-able). Payer just pays tx fee."
+          ],
+          "signer": true
+        }
+      ],
+      "args": [
+        {
+          "name": "bomb_index",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "initialize_game",
+      "discriminator": [
+        44,
+        62,
+        102,
+        247,
+        126,
+        208,
+        130,
+        215
+      ],
+      "accounts": [
+        {
+          "name": "game",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  103,
+                  97,
+                  109,
+                  101
+                ]
+              },
+              {
+                "kind": "arg",
+                "path": "game_id"
+              }
+            ]
+          }
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "game_id",
+          "type": "u64"
+        },
+        {
+          "name": "entry_fee",
+          "type": "u64"
+        },
+        {
+          "name": "max_players",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "join_game",
+      "discriminator": [
+        107,
+        112,
+        18,
+        38,
+        56,
+        173,
+        60,
+        128
+      ],
+      "accounts": [
+        {
+          "name": "game",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  103,
+                  97,
+                  109,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "game.game_id",
+                "account": "Game"
+              }
+            ]
+          }
+        },
+        {
+          "name": "player",
+          "writable": true
+        },
+        {
+          "name": "payer",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "player_authority",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "move_player",
+      "discriminator": [
+        17,
+        58,
+        68,
+        221,
+        186,
+        117,
+        140,
+        231
+      ],
+      "accounts": [
+        {
+          "name": "game",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  103,
+                  97,
+                  109,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "game.game_id",
+                "account": "Game"
+              }
+            ]
+          }
+        },
+        {
+          "name": "player",
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "signer": true
+        }
+      ],
+      "args": [
+        {
+          "name": "direction",
+          "type": "u8"
+        }
+      ]
+    },
+    {
+      "name": "place_bomb",
+      "discriminator": [
+        165,
+        31,
+        36,
+        156,
+        19,
+        206,
+        89,
+        188
+      ],
+      "accounts": [
+        {
+          "name": "game",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  103,
+                  97,
+                  109,
+                  101
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "game.game_id",
+                "account": "Game"
+              }
+            ]
+          }
+        },
+        {
+          "name": "player",
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "signer": true
+        }
+      ],
+      "args": []
+    }
+  ],
+  "accounts": [
+    {
+      "name": "Game",
+      "discriminator": [
+        27,
+        90,
+        166,
+        125,
+        74,
+        100,
+        121,
+        18
+      ]
+    },
+    {
+      "name": "Player",
+      "discriminator": [
+        205,
+        222,
+        112,
+        7,
+        165,
+        155,
+        206,
+        218
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "GameNotInLobby",
+      "msg": "Game is not in lobby state"
+    },
+    {
+      "code": 6001,
+      "name": "GameNotActive",
+      "msg": "Game is not active"
+    },
+    {
+      "code": 6002,
+      "name": "GameNotFinished",
+      "msg": "Game is not finished"
+    },
+    {
+      "code": 6003,
+      "name": "GameFull",
+      "msg": "Game is full"
+    },
+    {
+      "code": 6004,
+      "name": "PlayerNotAlive",
+      "msg": "Player is not alive"
+    },
+    {
+      "code": 6005,
+      "name": "PlayerGameMismatch",
+      "msg": "Player does not belong to this game"
+    },
+    {
+      "code": 6006,
+      "name": "Unauthorized",
+      "msg": "Unauthorized — signer does not match player authority"
+    },
+    {
+      "code": 6007,
+      "name": "InvalidDirection",
+      "msg": "Invalid direction (must be 0-3)"
+    },
+    {
+      "code": 6008,
+      "name": "CellNotWalkable",
+      "msg": "Cell is not walkable"
+    },
+    {
+      "code": 6009,
+      "name": "OutOfBounds",
+      "msg": "Move out of bounds"
+    },
+    {
+      "code": 6010,
+      "name": "MoveTooFast",
+      "msg": "Moving too fast — wait for cooldown"
+    },
+    {
+      "code": 6011,
+      "name": "NoBombsAvailable",
+      "msg": "No bombs available"
+    },
+    {
+      "code": 6012,
+      "name": "CellOccupied",
+      "msg": "Cell is occupied by a bomb"
+    },
+    {
+      "code": 6013,
+      "name": "BombSlotsFull",
+      "msg": "All bomb slots are full"
+    },
+    {
+      "code": 6014,
+      "name": "InvalidBombIndex",
+      "msg": "Invalid bomb index"
+    },
+    {
+      "code": 6015,
+      "name": "BombNotActive",
+      "msg": "Bomb is not active"
+    },
+    {
+      "code": 6016,
+      "name": "BombAlreadyDetonated",
+      "msg": "Bomb already detonated"
+    },
+    {
+      "code": 6017,
+      "name": "FuseNotExpired",
+      "msg": "Fuse has not expired yet"
+    },
+    {
+      "code": 6018,
+      "name": "NoWinner",
+      "msg": "No winner set"
+    },
+    {
+      "code": 6019,
+      "name": "NotWinner",
+      "msg": "Not the winner"
+    },
+    {
+      "code": 6020,
+      "name": "AlreadyClaimed",
+      "msg": "Prize already claimed"
+    },
+    {
+      "code": 6021,
+      "name": "MathOverflow",
+      "msg": "Math overflow"
+    }
+  ],
+  "types": [
+    {
+      "name": "BombSlot",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "active",
+            "type": "bool"
+          },
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "x",
+            "type": "u8"
+          },
+          {
+            "name": "y",
+            "type": "u8"
+          },
+          {
+            "name": "range",
+            "type": "u8"
+          },
+          {
+            "name": "fuse_slots",
+            "type": "u8"
+          },
+          {
+            "name": "placed_at_slot",
+            "type": "u64"
+          },
+          {
+            "name": "detonated",
+            "type": "bool"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Game",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "game_id",
+            "type": "u64"
+          },
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "grid_width",
+            "type": "u8"
+          },
+          {
+            "name": "grid_height",
+            "type": "u8"
+          },
+          {
+            "name": "max_players",
+            "type": "u8"
+          },
+          {
+            "name": "current_players",
+            "type": "u8"
+          },
+          {
+            "name": "entry_fee",
+            "type": "u64"
+          },
+          {
+            "name": "prize_pool",
+            "type": "u64"
+          },
+          {
+            "name": "status",
+            "type": "u8"
+          },
+          {
+            "name": "winner",
+            "type": "pubkey"
+          },
+          {
+            "name": "created_at",
+            "type": "i64"
+          },
+          {
+            "name": "started_at",
+            "type": "i64"
+          },
+          {
+            "name": "round_duration",
+            "type": "u16"
+          },
+          {
+            "name": "platform_fee_bps",
+            "type": "u16"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "cells",
+            "type": {
+              "array": [
+                "u8",
+                143
+              ]
+            }
+          },
+          {
+            "name": "powerup_types",
+            "type": {
+              "array": [
+                "u8",
+                143
+              ]
+            }
+          },
+          {
+            "name": "bombs",
+            "type": {
+              "array": [
+                {
+                  "defined": {
+                    "name": "BombSlot"
+                  }
+                },
+                12
+              ]
+            }
+          },
+          {
+            "name": "bomb_count",
+            "type": "u8"
+          },
+          {
+            "name": "last_detonate_slot",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Player",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "game",
+            "type": "pubkey"
+          },
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "player_index",
+            "type": "u8"
+          },
+          {
+            "name": "x",
+            "type": "u8"
+          },
+          {
+            "name": "y",
+            "type": "u8"
+          },
+          {
+            "name": "alive",
+            "type": "bool"
+          },
+          {
+            "name": "collected_sol",
+            "type": "u64"
+          },
+          {
+            "name": "wager",
+            "type": "u64"
+          },
+          {
+            "name": "bomb_range",
+            "type": "u8"
+          },
+          {
+            "name": "max_bombs",
+            "type": "u8"
+          },
+          {
+            "name": "active_bombs",
+            "type": "u8"
+          },
+          {
+            "name": "speed",
+            "type": "u8"
+          },
+          {
+            "name": "last_move_slot",
+            "type": "u64"
+          },
+          {
+            "name": "kills",
+            "type": "u8"
+          },
+          {
+            "name": "bump",
+            "type": "u8"
+          }
+        ]
+      }
+    }
+  ]
+}
