@@ -28,6 +28,10 @@ export default function CreateGamePage() {
       setError("Please connect your wallet first");
       return;
     }
+    if (entryFee < 0.01) {
+      setError("Minimum entry fee is 0.01 SOL");
+      return;
+    }
     setError(null);
     setIsCreating(true);
     try {

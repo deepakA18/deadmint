@@ -8,7 +8,7 @@ import { PixelButton } from "@/components/ui/PixelButton";
 
 const STEPS = [
   {
-    icon: "\u{1FA99}",
+    icon: "/sol.svg",
     title: "Wager SOL",
     desc: "Deposit SOL to enter a match.",
     accentColor: "var(--sol-green)",
@@ -219,7 +219,11 @@ export function Lobby() {
 
             {/* Icon */}
             <div className="text-5xl sm:text-6xl mb-5">
-              {step.icon}
+              {step.icon.endsWith(".svg") ? (
+                <img src={step.icon} alt={step.title} className="w-14 h-14 sm:w-16 sm:h-16" />
+              ) : (
+                step.icon
+              )}
             </div>
 
             {/* Title */}

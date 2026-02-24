@@ -5,7 +5,9 @@ import { readFileSync } from "fs";
 // ─── Environment ─────────────────────────────────────────────
 
 export const PORT = parseInt(process.env.PORT || "8080");
-export const RPC_URL = process.env.RPC_URL || "https://devnet.helius-rpc.com/?api-key=90a86d9d-6820-4f75-9f5b-c8099b59eef9";
+const rpcUrl = process.env.RPC_URL;
+if (!rpcUrl) throw new Error("Set RPC_URL in .env (e.g. https://devnet.helius-rpc.com/?api-key=YOUR_KEY)");
+export const RPC_URL = rpcUrl;
 export const PROGRAM_ID_STR = "Aj2fUK4fdw6Y6BCgtuUPsBL761AAgFjNjzt5Zd3Sp2Qb";
 
 // ─── Timing ──────────────────────────────────────────────────

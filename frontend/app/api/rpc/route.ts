@@ -1,10 +1,15 @@
 import { NextRequest, NextResponse } from "next/server";
 
-const HELIUS_RPC_URL =
-  process.env.HELIUS_RPC_URL ||
-  "https://devnet.helius-rpc.com/?api-key=90a86d9d-6820-4f75-9f5b-c8099b59eef9";
+const HELIUS_RPC_URL = process.env.HELIUS_RPC_URL;
 
 export async function POST(req: NextRequest) {
+  if (!HELIUS_RPC_URL) {
+    return NextResponse.json(
+      { jsonrpc: "2.0", error: { code: -32000, message: "RPC not configured" }, id: null },
+      { status: 500 }
+    );
+  }
+
   try {
     const body = await req.text();
 
