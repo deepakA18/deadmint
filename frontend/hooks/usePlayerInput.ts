@@ -12,7 +12,7 @@ interface UsePlayerInputOptions {
 export function usePlayerInput({ onMove, onBomb, enabled }: UsePlayerInputOptions) {
   const [lastDirection, setLastDirection] = useState(DIR_DOWN);
   const lastActionTime = useRef(0);
-  const DEBOUNCE_MS = 100;
+  const DEBOUNCE_MS = 50;
 
   const handleKey = useCallback(
     (e: KeyboardEvent) => {

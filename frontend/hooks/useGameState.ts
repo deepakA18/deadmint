@@ -132,6 +132,11 @@ export function useGameState({ mode, liveConfig }: UseGameStateOptions): UseGame
   const localPlayerFoundRef = useRef(false);
   const explosionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  // Optimistic movement: keep local player position until on-chain catches up
+  const optimisticPosRef = useRef<{ x: number; y: number; until: number } | null>(null);
+  const localPlayerIndexRef = useRef(localPlayerIndex);
+  localPlayerIndexRef.current = localPlayerIndex;
+
   // ─── LIVE MODE: WebSocket connection ───────────────────────
 
   useEffect(() => {
@@ -143,6 +148,22 @@ export function useGameState({ mode, liveConfig }: UseGameStateOptions): UseGame
       : liveConfig.wallet.publicKey;
 
     const conn = connectToGame(gamePdaStr, (state) => {
+      // Preserve optimistic local player position to avoid rubber-banding
+      const opt = optimisticPosRef.current;
+      if (opt && Date.now() < opt.until && localPlayerFoundRef.current) {
+        const lpi = localPlayerIndexRef.current;
+        const serverPlayer = state.players[lpi];
+        // If server already caught up to our position, clear optimistic
+        if (serverPlayer && serverPlayer.x === opt.x && serverPlayer.y === opt.y) {
+          optimisticPosRef.current = null;
+        } else if (serverPlayer && serverPlayer.alive) {
+          // Override server position with our optimistic one
+          serverPlayer.x = opt.x;
+          serverPlayer.y = opt.y;
+        }
+      } else {
+        optimisticPosRef.current = null;
+      }
       setGameState(state);
       setIsLoading(false);
 
@@ -212,22 +233,44 @@ export function useGameState({ mode, liveConfig }: UseGameStateOptions): UseGame
 
   // Live move player (simplified — no crank, backend handles detonation)
   const liveMove = useCallback(
-    async (direction: number) => {
+    (direction: number) => {
       if (!liveConfig || !gameState || gameState.config.status !== STATUS_ACTIVE) return;
       const localPlayer = gameState.players[localPlayerIndex];
       if (!localPlayer || !localPlayer.alive) return;
-      try {
-        const signer: gameService.Signer = liveConfig.sessionKey || liveConfig.wallet;
-        const [localPlayerPda] = derivePlayerPda(liveConfig.gamePda, localPlayerIndex);
-        await gameService.movePlayer(
-          signer,
-          liveConfig.gamePda,
-          localPlayerPda,
-          direction,
-        );
-      } catch (e) {
-        console.error("Move failed:", e);
+
+      // Compute optimistic target
+      const [nx, ny] = getNewPos(localPlayer.x, localPlayer.y, direction);
+      const canMove =
+        nx >= 0 && nx < GRID_WIDTH && ny >= 0 && ny < GRID_HEIGHT &&
+        isWalkable(gameState.grid.cells[ny * GRID_WIDTH + nx]);
+
+      if (canMove) {
+        // Record optimistic position — WS handler will preserve it for 2s
+        optimisticPosRef.current = { x: nx, y: ny, until: Date.now() + 2000 };
+
+        // Immediately update local state
+        setGameState((prev) => {
+          if (!prev) return prev;
+          const next = deepCloneState(prev);
+          next.players[localPlayerIndex].x = nx;
+          next.players[localPlayerIndex].y = ny;
+          return next;
+        });
       }
+
+      // Fire TX in background — on-chain state reconciles via WS
+      const signer: gameService.Signer = liveConfig.sessionKey || liveConfig.wallet;
+      const [localPlayerPda] = derivePlayerPda(liveConfig.gamePda, localPlayerIndex);
+      gameService.movePlayer(
+        signer,
+        liveConfig.gamePda,
+        localPlayerPda,
+        direction,
+      ).catch((e) => {
+        console.error("Move failed:", e);
+        // TX failed — clear optimistic position so next WS update corrects it
+        optimisticPosRef.current = null;
+      });
     },
     [liveConfig, gameState, localPlayerIndex]
   );
