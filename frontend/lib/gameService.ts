@@ -30,11 +30,17 @@ export interface WalletAdapter {
 
 // ─── Connection helpers ───────────────────────────────────────
 
+function resolveRpcUrl(url: string): string {
+  if (url.startsWith("http")) return url;
+  if (typeof window !== "undefined") return `${window.location.origin}${url}`;
+  return `http://localhost:3000${url}`;
+}
+
 let _baseConn: Connection | null = null;
 let _erConn: Connection | null = null;
 
 export function getBaseConnection(): Connection {
-  if (!_baseConn) _baseConn = new Connection(RPC_URL, "confirmed");
+  if (!_baseConn) _baseConn = new Connection(resolveRpcUrl(RPC_URL), "confirmed");
   return _baseConn;
 }
 
