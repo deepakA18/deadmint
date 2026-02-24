@@ -204,12 +204,6 @@ export function GameOverModal({
         <div className="flex gap-4 justify-center">
           <PixelButton
             variant="primary"
-            onClick={() => { window.location.href = "/game/demo"; }}
-          >
-            PLAY AGAIN
-          </PixelButton>
-          <PixelButton
-            variant="secondary"
             onClick={() => router.push("/")}
           >
             LOBBY

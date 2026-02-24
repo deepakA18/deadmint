@@ -40,7 +40,14 @@ let _baseConn: Connection | null = null;
 let _erConn: Connection | null = null;
 
 export function getBaseConnection(): Connection {
-  if (!_baseConn) _baseConn = new Connection(resolveRpcUrl(RPC_URL), "confirmed");
+  if (!_baseConn) {
+    const httpUrl = resolveRpcUrl(RPC_URL);
+    // If using the /api/rpc proxy, WS isn't supported — use public devnet WS endpoint
+    const wsEndpoint = httpUrl.includes("/api/rpc")
+      ? "wss://api.devnet.solana.com"
+      : undefined;
+    _baseConn = new Connection(httpUrl, { commitment: "confirmed", wsEndpoint });
+  }
   return _baseConn;
 }
 

@@ -21,13 +21,18 @@ export function WalletProvider({ children }: { children: React.ReactNode }) {
     if (typeof window !== "undefined") return `${window.location.origin}${RPC_URL}`;
     return `http://localhost:3000${RPC_URL}`;
   }, []);
+  // If using /api/rpc proxy, WS isn't supported — use public devnet WS endpoint
+  const wsEndpoint = useMemo(
+    () => (endpoint.includes("/api/rpc") ? "wss://api.devnet.solana.com" : undefined),
+    [endpoint]
+  );
   const wallets = useMemo(
     () => [new PhantomWalletAdapter(), new SolflareWalletAdapter()],
     []
   );
 
   return (
-    <ConnectionProvider endpoint={endpoint}>
+    <ConnectionProvider endpoint={endpoint} config={{ wsEndpoint, commitment: "confirmed" }}>
       <SolanaWalletProvider wallets={wallets} autoConnect>
         <WalletModalProvider>{children}</WalletModalProvider>
       </SolanaWalletProvider>

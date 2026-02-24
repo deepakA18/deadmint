@@ -25,6 +25,7 @@ export async function POST(req: NextRequest) {
       headers: { "Content-Type": "application/json" },
     });
   } catch (e: any) {
+    console.error("[/api/rpc] proxy error:", e.message, "| URL:", HELIUS_RPC_URL?.slice(0, 40));
     return NextResponse.json(
       { jsonrpc: "2.0", error: { code: -32000, message: e.message }, id: null },
       { status: 502 }
