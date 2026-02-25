@@ -94,10 +94,11 @@ pub struct Player {
     pub speed: u8,
     pub last_move_slot: u64,
     pub kills: u8,
+    pub input_nonce: u64,
     pub bump: u8,
 }
 
 impl Player {
-    // 8 (discriminator) + 32 + 32 + 1 + 1 + 1 + 1 + 8 + 8 + 1 + 1 + 1 + 1 + 8 + 1 + 1 = 106
-    pub const SIZE: usize = 8 + 32 + 32 + 1 + 1 + 1 + 1 + 8 + 8 + 1 + 1 + 1 + 1 + 8 + 1 + 1;
+    // 8 (discriminator) + 32 + 32 + 1 + 1 + 1 + 1 + 8 + 8 + 1 + 1 + 1 + 1 + 8 + 1 + 8 + 1 = 114
+    pub const SIZE: usize = 8 + 32 + 32 + 1 + 1 + 1 + 1 + 8 + 8 + 1 + 1 + 1 + 1 + 8 + 1 + 8 + 1;
 }

@@ -34,6 +34,7 @@ export interface WirePlayerState {
   playerIndex: number;
   lastMoveSlot: string;
   kills: number;
+  inputNonce: number;
 }
 
 export interface WireBombState {

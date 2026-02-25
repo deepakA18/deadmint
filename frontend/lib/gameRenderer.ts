@@ -153,6 +153,73 @@ let particles: Particle[] = [];
 // Previous explosion cells for detecting new explosions
 let prevExplosionCells: Set<number> = new Set();
 
+// ─── Visual Lerp State (render-only, doesn't affect simulation) ──
+// Players snap between tiles in simulation but lerp visually for smoothness.
+
+interface VisualPlayer {
+  renderX: number;
+  renderY: number;
+  prevSimX: number;
+  prevSimY: number;
+}
+
+let visualPlayers: VisualPlayer[] = [];
+const LOCAL_LERP_SPEED = 0.35;   // fast — local player input feels snappy
+const REMOTE_LERP_SPEED = 0.22;  // slightly slower — hides network jitter
+
+function updateVisualPositions(
+  players: PlayerState[],
+  localPlayerIndex: number
+) {
+  // Initialize if needed
+  while (visualPlayers.length < players.length) {
+    const p = players[visualPlayers.length];
+    visualPlayers.push({
+      renderX: p.x * TILE_SIZE,
+      renderY: p.y * TILE_SIZE,
+      prevSimX: p.x,
+      prevSimY: p.y,
+    });
+  }
+
+  for (let i = 0; i < players.length; i++) {
+    const targetX = players[i].x * TILE_SIZE;
+    const targetY = players[i].y * TILE_SIZE;
+
+    // Detect teleport (>2 tiles) — snap instantly instead of lerping
+    const dist = Math.abs(targetX - visualPlayers[i].renderX) +
+                 Math.abs(targetY - visualPlayers[i].renderY);
+    if (dist > TILE_SIZE * 2.5) {
+      visualPlayers[i].renderX = targetX;
+      visualPlayers[i].renderY = targetY;
+      visualPlayers[i].prevSimX = players[i].x;
+      visualPlayers[i].prevSimY = players[i].y;
+      continue;
+    }
+
+    visualPlayers[i].prevSimX = players[i].x;
+    visualPlayers[i].prevSimY = players[i].y;
+
+    // Lerp toward target
+    const speed = i === localPlayerIndex ? LOCAL_LERP_SPEED : REMOTE_LERP_SPEED;
+    const dx = targetX - visualPlayers[i].renderX;
+    const dy = targetY - visualPlayers[i].renderY;
+
+    if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) {
+      visualPlayers[i].renderX = targetX;
+      visualPlayers[i].renderY = targetY;
+    } else {
+      visualPlayers[i].renderX += dx * speed;
+      visualPlayers[i].renderY += dy * speed;
+    }
+  }
+}
+
+/** Reset visual state (e.g. on game restart). */
+export function resetVisualPlayers() {
+  visualPlayers = [];
+}
+
 function createOffscreenCanvas(): HTMLCanvasElement {
   const c = document.createElement("canvas");
   c.width = TILE_SIZE;
@@ -465,10 +532,12 @@ function drawPlayer(
   player: PlayerState,
   colorHex: string,
   frameCount: number,
-  facing: number
+  facing: number,
+  renderX: number,
+  renderY: number
 ) {
-  const sx = player.x * TILE_SIZE;
-  const sy = player.y * TILE_SIZE;
+  const sx = renderX;
+  const sy = renderY;
 
   if (!player.alive) {
     // Dead: ghost rising animation
@@ -759,6 +828,9 @@ export function renderFrame(
   // Fog atmosphere
   drawFog(ctx, frameCount);
 
+  // Update visual lerp positions (render-only smoothing)
+  updateVisualPositions(state.players, localPlayerIndex);
+
   // Draw players (alive last so they render on top)
   const sortedPlayers = [...state.players].sort((a, b) => {
     if (a.alive && !b.alive) return 1;
@@ -767,9 +839,13 @@ export function renderFrame(
   });
 
   for (const player of sortedPlayers) {
-    if (player.playerIndex >= 0 && player.playerIndex < PLAYER_COLORS.length) {
-      const facing = playerFacings[player.playerIndex] ?? 1;
-      drawPlayer(ctx, player, PLAYER_COLORS[player.playerIndex], frameCount, facing);
+    const pi = player.playerIndex;
+    if (pi >= 0 && pi < PLAYER_COLORS.length) {
+      const facing = playerFacings[pi] ?? 1;
+      const vp = visualPlayers[pi];
+      const rx = vp ? vp.renderX : player.x * TILE_SIZE;
+      const ry = vp ? vp.renderY : player.y * TILE_SIZE;
+      drawPlayer(ctx, player, PLAYER_COLORS[pi], frameCount, facing, rx, ry);
     }
   }
 
@@ -779,13 +855,14 @@ export function renderFrame(
   // Vignette
   drawVignette(ctx);
 
-  // Local player highlight (subtle glow under their character)
+  // Local player highlight (subtle glow under their character, using lerped pos)
   const lp = state.players[localPlayerIndex];
   if (lp && lp.alive) {
+    const lpVisual = visualPlayers[localPlayerIndex];
+    const lpx = lpVisual ? lpVisual.renderX + TILE_SIZE / 2 : lp.x * TILE_SIZE + TILE_SIZE / 2;
+    const lpy = lpVisual ? lpVisual.renderY + TILE_SIZE : lp.y * TILE_SIZE + TILE_SIZE;
     ctx.globalAlpha = 0.15 + Math.sin(frameCount * 0.08) * 0.05;
     ctx.fillStyle = PLAYER_COLORS[localPlayerIndex];
-    const lpx = lp.x * TILE_SIZE + TILE_SIZE / 2;
-    const lpy = lp.y * TILE_SIZE + TILE_SIZE;
     ctx.beginPath();
     ctx.ellipse(lpx, lpy, 16, 6, 0, 0, Math.PI * 2);
     ctx.fill();

@@ -49,6 +49,7 @@ pub fn handler(ctx: Context<JoinGame>, player_authority: Pubkey) -> Result<()> {
     player.speed = 1;
     player.last_move_slot = 0;
     player.kills = 0;
+    player.input_nonce = 0;
     player.bump = ctx.bumps.player;
 
     // Transfer entry fee from payer to game account

@@ -35,6 +35,7 @@ interface WireGameState {
     playerIndex: number;
     lastMoveSlot: string;
     kills: number;
+    inputNonce: number;
   }[];
   bombs: {
     owner: string | null;
@@ -101,6 +102,7 @@ function wireToFullState(wire: WireGameState): FullGameState {
     playerIndex: p.playerIndex,
     lastMoveSlot: new BN(p.lastMoveSlot),
     kills: p.kills,
+    inputNonce: p.inputNonce ?? 0,
   }));
 
   const bombs: BombState[] = wire.bombs.map((b) => ({

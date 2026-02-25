@@ -352,6 +352,7 @@ function toWireState(state: FetchedGameState, delegated: boolean): WireGameState
         playerIndex: p.playerIndex,
         lastMoveSlot: p.lastMoveSlot.toString(),
         kills: p.kills,
+        inputNonce: typeof p.inputNonce === "number" ? p.inputNonce : parseInt((p.inputNonce ?? 0).toString()),
       });
     } else {
       players.push({
@@ -360,6 +361,7 @@ function toWireState(state: FetchedGameState, delegated: boolean): WireGameState
         collectedSol: "0", wager: "0",
         bombRange: 0, maxBombs: 0, activeBombs: 0, speed: 0,
         playerIndex: i, lastMoveSlot: "0", kills: 0,
+        inputNonce: 0,
       });
     }
   }

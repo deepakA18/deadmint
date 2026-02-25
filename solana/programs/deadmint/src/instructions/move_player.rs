@@ -124,6 +124,7 @@ pub fn handler(ctx: Context<MovePlayer>, direction: u8) -> Result<()> {
     player.x = new_x;
     player.y = new_y;
     player.last_move_slot = current_slot;
+    player.input_nonce += 1;
 
     Ok(())
 }

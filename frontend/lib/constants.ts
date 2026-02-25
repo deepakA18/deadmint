@@ -5,10 +5,17 @@ export const RPC_URL =
   process.env.NEXT_PUBLIC_RPC_URL || "/api/rpc";
 export const EPHEMERAL_RPC_URL =
   process.env.NEXT_PUBLIC_EPHEMERAL_RPC || "https://devnet-as.magicblock.app";
+export const EPHEMERAL_WS_URL =
+  process.env.NEXT_PUBLIC_EPHEMERAL_WS || "wss://devnet-as.magicblock.app";
 
 // --- Program ID (single Anchor program) ---
 export const PROGRAM_ID = new PublicKey(
   "GLnaE4KiQUGDZTtDP1YnTV4dtUbXudBk1kApueC791c"
+);
+
+// --- MagicBlock Delegation Program ---
+export const DELEGATION_PROGRAM_ID = new PublicKey(
+  "DELeGGvXpWV2fqJUhqcF5ZSYMS4JTLjteaAMARRSaeSh"
 );
 
 // --- Grid ---

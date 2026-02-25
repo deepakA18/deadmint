@@ -37,6 +37,7 @@ export interface PlayerState {
   playerIndex: number;
   lastMoveSlot: BN;
   kills: number;
+  inputNonce: number;
 }
 
 export interface BombState {
@@ -47,6 +48,7 @@ export interface BombState {
   fuseSlots: number;
   placedAtSlot: BN;
   detonated: boolean;
+  originalIndex?: number; // index in the on-chain bombs array (for detonateBomb TX)
 }
 
 export interface FullGameState {
@@ -55,4 +57,5 @@ export interface FullGameState {
   players: PlayerState[];
   bombs: BombState[];
   delegated: boolean;
+  currentSlot?: number; // for bomb fuse expiry detection
 }

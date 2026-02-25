@@ -132,6 +132,7 @@ export interface RawPlayerAccount {
   speed: number;
   lastMoveSlot: any;
   kills: number;
+  inputNonce: any;
   bump: number;
 }
 

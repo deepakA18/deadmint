@@ -59,6 +59,7 @@ pub fn handler(ctx: Context<PlaceBomb>) -> Result<()> {
     game.bomb_count += 1;
 
     player.active_bombs += 1;
+    player.input_nonce += 1;
 
     Ok(())
 }

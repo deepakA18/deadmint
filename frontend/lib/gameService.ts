@@ -10,7 +10,9 @@ import { Program, AnchorProvider, BN } from "@coral-xyz/anchor";
 import {
   RPC_URL,
   EPHEMERAL_RPC_URL,
+  EPHEMERAL_WS_URL,
   PROGRAM_ID,
+  DELEGATION_PROGRAM_ID,
 } from "./constants";
 import type { FullGameState, GameConfig, GridState, PlayerState, BombState } from "./types";
 import idlJson from "./idl/deadmint.json";
@@ -52,8 +54,25 @@ export function getBaseConnection(): Connection {
 }
 
 export function getErConnection(): Connection {
-  if (!_erConn) _erConn = new Connection(EPHEMERAL_RPC_URL, "confirmed");
+  if (!_erConn) _erConn = new Connection(EPHEMERAL_RPC_URL, {
+    commitment: "confirmed",
+    wsEndpoint: EPHEMERAL_WS_URL,
+  });
   return _erConn;
+}
+
+// ─── Delegation check ───────────────────────────────────────
+
+/** Check if a game PDA is currently delegated by querying the base layer owner. */
+export async function isDelegatedOnChain(gamePda: PublicKey): Promise<boolean> {
+  try {
+    const conn = getBaseConnection();
+    const info = await conn.getAccountInfo(gamePda);
+    if (!info) return false;
+    return info.owner.equals(DELEGATION_PROGRAM_ID);
+  } catch {
+    return false;
+  }
 }
 
 // ─── Program helper ──────────────────────────────────────────
@@ -438,6 +457,16 @@ export async function fetchGameConfig(
     const game = await program.account.game.fetch(gamePda);
     return anchorGameToConfig(game);
   } catch {
+    // Anchor fetch failed — account might be delegated (owner = delegation program).
+    // Check base layer and try ER if delegated.
+    try {
+      const info = await connection.getAccountInfo(gamePda);
+      if (info && info.owner.equals(DELEGATION_PROGRAM_ID)) {
+        const erProgram = getProgram(getErConnection());
+        const game = await erProgram.account.game.fetch(gamePda);
+        return anchorGameToConfig(game);
+      }
+    } catch {}
     return null;
   }
 }
@@ -446,6 +475,26 @@ export async function fetchFullGameState(
   connection: Connection,
   gamePda: PublicKey,
   maxPlayers: number
+): Promise<FullGameState | null> {
+  // Try base layer first, then ER if account is delegated
+  const result = await _fetchFullGameStateFrom(connection, gamePda, maxPlayers, false);
+  if (result) return result;
+
+  // Base layer fetch failed — check if account is delegated
+  try {
+    const info = await connection.getAccountInfo(gamePda);
+    if (info && info.owner.equals(DELEGATION_PROGRAM_ID)) {
+      return _fetchFullGameStateFrom(getErConnection(), gamePda, maxPlayers, true);
+    }
+  } catch {}
+  return null;
+}
+
+async function _fetchFullGameStateFrom(
+  connection: Connection,
+  gamePda: PublicKey,
+  maxPlayers: number,
+  delegated: boolean
 ): Promise<FullGameState | null> {
   const program = getProgram(connection);
 
@@ -470,6 +519,7 @@ export async function fetchFullGameState(
           collectedSol: new BN(0), wager: new BN(0),
           bombRange: 0, maxBombs: 0, activeBombs: 0, speed: 0,
           playerIndex: i, lastMoveSlot: new BN(0), kills: 0,
+          inputNonce: 0,
         });
       }
     }
@@ -485,7 +535,7 @@ export async function fetchFullGameState(
         detonated: b.detonated,
       }));
 
-    return { config, grid, players, bombs, delegated: false };
+    return { config, grid, players, bombs, delegated };
   } catch (e) {
     console.error("fetchFullGameState error:", e);
     return null;
@@ -527,7 +577,86 @@ function anchorPlayerToState(p: any): PlayerState {
     playerIndex: p.playerIndex,
     lastMoveSlot: p.lastMoveSlot,
     kills: p.kills,
+    inputNonce: typeof p.inputNonce === "number" ? p.inputNonce : parseInt((p.inputNonce ?? 0).toString()),
   };
+}
+
+// ─── Batched State Fetch (single RPC call, like SendRC pattern) ──
+
+export async function fetchGameStateBatched(
+  connection: Connection,
+  gamePda: PublicKey,
+  maxPlayers: number,
+  delegated: boolean
+): Promise<FullGameState | null> {
+  const program = getProgram(connection);
+
+  const playerPdas: PublicKey[] = [];
+  for (let i = 0; i < maxPlayers; i++) {
+    const [pda] = derivePlayerPda(gamePda, i);
+    playerPdas.push(pda);
+  }
+
+  const allKeys = [gamePda, ...playerPdas];
+
+  try {
+    const [accountInfos, currentSlot] = await Promise.all([
+      connection.getMultipleAccountsInfo(allKeys),
+      connection.getSlot(),
+    ]);
+    if (!accountInfos[0]) return null;
+
+    const game = (program as any).coder.accounts.decode("game", accountInfos[0].data);
+    const config = anchorGameToConfig(game);
+    const grid: GridState = {
+      cells: Array.from(game.cells),
+      powerupTypes: Array.from(game.powerupTypes),
+    };
+
+    const players: PlayerState[] = [];
+    for (let i = 0; i < maxPlayers; i++) {
+      const info = accountInfos[i + 1];
+      if (info) {
+        try {
+          const p = (program as any).coder.accounts.decode("player", info.data);
+          players.push(anchorPlayerToState(p));
+        } catch {
+          players.push({
+            authority: null, x: 0, y: 0, alive: false,
+            collectedSol: new BN(0), wager: new BN(0),
+            bombRange: 0, maxBombs: 0, activeBombs: 0, speed: 0,
+            playerIndex: i, lastMoveSlot: new BN(0), kills: 0,
+            inputNonce: 0,
+          });
+        }
+      } else {
+        players.push({
+          authority: null, x: 0, y: 0, alive: false,
+          collectedSol: new BN(0), wager: new BN(0),
+          bombRange: 0, maxBombs: 0, activeBombs: 0, speed: 0,
+          playerIndex: i, lastMoveSlot: new BN(0), kills: 0,
+          inputNonce: 0,
+        });
+      }
+    }
+
+    const bombs: BombState[] = game.bombs
+      .map((b: any, i: number) => ({ ...b, _idx: i }))
+      .filter((b: any) => b.active || b.detonated)
+      .map((b: any) => ({
+        owner: b.owner.toBase58() === PublicKey.default.toBase58() ? null : b.owner,
+        x: b.x, y: b.y, range: b.range,
+        fuseSlots: b.fuseSlots,
+        placedAtSlot: b.placedAtSlot,
+        detonated: b.detonated,
+        originalIndex: b._idx,
+      }));
+
+    return { config, grid, players, bombs, delegated, currentSlot };
+  } catch (e) {
+    console.error("fetchGameStateBatched error:", e);
+    return null;
+  }
 }
 
 // ─── Discover Games (getProgramAccounts) ──────────────────────
@@ -536,13 +665,27 @@ export async function discoverGames(
   connection: Connection
 ): Promise<{ gamePda: PublicKey; config: GameConfig }[]> {
   const program = getProgram(connection);
+  const results: { gamePda: PublicKey; config: GameConfig }[] = [];
+
+  // Base layer: accounts still owned by our program (non-delegated)
   try {
     const allGames = await program.account.game.all();
-    return allGames.map((g) => ({
-      gamePda: g.publicKey,
-      config: anchorGameToConfig(g.account),
-    }));
-  } catch {
-    return [];
-  }
+    for (const g of allGames) {
+      results.push({ gamePda: g.publicKey, config: anchorGameToConfig(g.account) });
+    }
+  } catch {}
+
+  // ER: accounts currently delegated (owned by delegation program on base layer)
+  try {
+    const erProgram = getProgram(getErConnection());
+    const erGames = await erProgram.account.game.all();
+    const seenPdas = new Set(results.map((r) => r.gamePda.toBase58()));
+    for (const g of erGames) {
+      if (!seenPdas.has(g.publicKey.toBase58())) {
+        results.push({ gamePda: g.publicKey, config: anchorGameToConfig(g.account) });
+      }
+    }
+  } catch {}
+
+  return results;
 }
