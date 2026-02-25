@@ -5,7 +5,7 @@
  * IDL can be found at `target/idl/deadmint.json`.
  */
 export type Deadmint = {
-  "address": "Aj2fUK4fdw6Y6BCgtuUPsBL761AAgFjNjzt5Zd3Sp2Qb",
+  "address": "GLnaE4KiQUGDZTtDP1YnTV4dtUbXudBk1kApueC791c",
   "metadata": {
     "name": "deadmint",
     "version": "0.1.0",
@@ -262,7 +262,7 @@ export type Deadmint = {
         },
         {
           "name": "ownerProgram",
-          "address": "Aj2fUK4fdw6Y6BCgtuUPsBL761AAgFjNjzt5Zd3Sp2Qb"
+          "address": "GLnaE4KiQUGDZTtDP1YnTV4dtUbXudBk1kApueC791c"
         },
         {
           "name": "delegationProgram",

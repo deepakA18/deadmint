@@ -8,7 +8,7 @@ export const EPHEMERAL_RPC_URL =
 
 // --- Program ID (single Anchor program) ---
 export const PROGRAM_ID = new PublicKey(
-  "Aj2fUK4fdw6Y6BCgtuUPsBL761AAgFjNjzt5Zd3Sp2Qb"
+  "GLnaE4KiQUGDZTtDP1YnTV4dtUbXudBk1kApueC791c"
 );
 
 // --- Grid ---
