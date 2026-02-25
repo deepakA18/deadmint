@@ -32,6 +32,8 @@ import * as gameService from "@/lib/gameService";
 import { derivePlayerPda } from "@/lib/gameService";
 import { connectToGame, type GameConnection } from "@/lib/backendWs";
 
+const FUSE_TICKS = 30; // must match backend — bomb fuse in simulation steps
+
 // ─── Nonce-Based Input Buffer for Client-Side Prediction ──
 // Each input is tagged with the expected server nonce AFTER the server
 // processes it.  Reconciliation uses `server.player.inputNonce` (an
@@ -186,6 +188,11 @@ function replayInput(
   playerIndex: number,
   input: InputFrame
 ): boolean {
+  // Advance simulation tick for each replayed input step
+  if (state.currentTick != null) {
+    state.currentTick += 1;
+  }
+
   const p = state.players[playerIndex];
   if (!p || !p.alive) return false;
 
@@ -219,6 +226,20 @@ function replayInput(
         state.grid.cells[cellIdx] !== CELL_POWERUP) return false;
     state.grid.cells[cellIdx] = CELL_BOMB;
     p.activeBombs++;
+    // Attach tick data for optimistic bomb so detonation can be simulated
+    if (state.currentTick != null) {
+      state.bombs.push({
+        owner: p.authority,
+        x: p.x,
+        y: p.y,
+        range: p.bombRange,
+        fuseSlots: 12,
+        placedAtSlot: new BN(0),
+        detonated: false,
+        placedTick: state.currentTick,
+        explodeTick: state.currentTick + FUSE_TICKS,
+      });
+    }
     return true;
   }
 
@@ -255,6 +276,12 @@ function reconcileWithNonce(
   for (const frame of unconfirmed) {
     const ok = replayInput(reconciled, localPlayerIndex, frame);
     if (!ok) break; // Input can't apply — stop; TX failure handler will clean up
+  }
+
+  // After replaying all inputs (which advanced currentTick per step),
+  // simulate any bombs whose explodeTick has been reached.
+  if (reconciled.currentTick != null) {
+    simulateExpiredBombs(reconciled);
   }
 
   return reconciled;
@@ -442,9 +469,10 @@ export function useGameState({ mode, liveConfig }: UseGameStateOptions): UseGame
   useEffect(() => {
     if (mode !== "live" || !liveConfig || !gameState) return;
     if (gameState.config.status !== STATUS_ACTIVE) return;
-    if (!gameState.currentSlot) return;
 
-    const currentSlot = gameState.currentSlot;
+    // Primary gate: simulation tick (deterministic, rewindable)
+    if (gameState.currentTick == null) return;
+
     const signer: gameService.Signer = liveConfig.sessionKey || liveConfig.wallet;
     const playerPdas: PublicKey[] = [];
     for (let i = 0; i < liveConfig.maxPlayers; i++) {
@@ -455,10 +483,18 @@ export function useGameState({ mode, liveConfig }: UseGameStateOptions): UseGame
     for (const bomb of gameState.bombs) {
       if (bomb.detonated) continue;
       if (bomb.originalIndex == null) continue;
-      const fuseExpiry = new BN(bomb.placedAtSlot.toString()).toNumber() + bomb.fuseSlots;
-      if (currentSlot < fuseExpiry) continue;
 
-      // Bomb fuse expired — send detonateBomb if we haven't already
+      // TICK-BASED trigger: is the bomb past its fuse in simulation time?
+      if (bomb.explodeTick != null && gameState.currentTick < bomb.explodeTick) continue;
+
+      // SLOT-BASED validation: on-chain requires slot >= placed + fuse
+      // Only check if we have slot data (keeps TX from failing on-chain)
+      if (gameState.currentSlot != null) {
+        const fuseExpiry = new BN(bomb.placedAtSlot.toString()).toNumber() + bomb.fuseSlots;
+        if (gameState.currentSlot < fuseExpiry) continue;
+      }
+
+      // Both conditions met — send detonateBomb TX
       if (detonationSentRef.current.has(bomb.originalIndex)) continue;
       detonationSentRef.current.add(bomb.originalIndex);
 
@@ -470,7 +506,6 @@ export function useGameState({ mode, liveConfig }: UseGameStateOptions): UseGame
         gameState.delegated,
       ).catch((e) => {
         console.error("Detonate bomb failed:", e);
-        // Allow retry next poll
         detonationSentRef.current.delete(bomb.originalIndex!);
       });
     }
@@ -482,6 +517,28 @@ export function useGameState({ mode, liveConfig }: UseGameStateOptions): UseGame
       }
     }
   }, [mode, liveConfig, gameState, localPlayerIndex]);
+
+  // ─── LIVE MODE: Local tick advancement ───────────────────
+  // Between server updates, advance currentTick locally so bombs
+  // detonate smoothly without waiting for next reconciliation.
+  // On next reconciliation, currentTick rewinds to server value (rollback).
+  useEffect(() => {
+    if (mode !== "live") return;
+    if (!gameState || gameState.config.status !== STATUS_ACTIVE) return;
+    if (gameState.currentTick == null) return;
+
+    const id = setInterval(() => {
+      setGameState((prev) => {
+        if (!prev || prev.currentTick == null || prev.config.status !== STATUS_ACTIVE) return prev;
+        const next = deepCloneState(prev);
+        next.currentTick! += 1;
+        simulateExpiredBombs(next);
+        return next;
+      });
+    }, 100); // match approximate server tick rate
+
+    return () => clearInterval(id);
+  }, [mode, gameState?.config.status, gameState?.currentTick != null]);
 
   // Shared bomb detonation scheduler (mock mode only)
   const scheduleBombDetonation = useCallback(
@@ -861,6 +918,45 @@ function hasAdjacentBlock(cells: number[], x: number, y: number): boolean {
   return false;
 }
 
+/**
+ * Deterministic bomb detonation based on simulation ticks.
+ * Called after rollback+replay AND during local tick advancement.
+ * Uses ONLY state.currentTick — no wall-clock, no slot time.
+ * Idempotent: already-detonated bombs are skipped.
+ */
+function simulateExpiredBombs(state: FullGameState): void {
+  if (state.currentTick == null) return;
+
+  for (let i = state.bombs.length - 1; i >= 0; i--) {
+    const bomb = state.bombs[i];
+    if (bomb.detonated) continue;
+    if (bomb.explodeTick == null) continue;
+    if (state.currentTick < bomb.explodeTick) continue;
+
+    // Bomb fuse expired in simulation — detonate deterministically
+    const cellIdx = bomb.y * GRID_WIDTH + bomb.x;
+    if (state.grid.cells[cellIdx] === CELL_BOMB) {
+      state.grid.cells[cellIdx] = CELL_EXPLOSION;
+    }
+
+    // Reuse existing explosion propagation
+    detonateBombAt(state, cellIdx, bomb.range, -1);
+
+    bomb.detonated = true;
+
+    // Decrement owner's activeBombs
+    const ownerPlayer = state.players.find(
+      (p) => p.authority && bomb.owner && p.authority.equals(bomb.owner)
+    );
+    if (ownerPlayer) {
+      ownerPlayer.activeBombs = Math.max(0, ownerPlayer.activeBombs - 1);
+    }
+
+    // Check if any player is standing on an explosion cell
+    checkPlayerDeaths(state);
+  }
+}
+
 function detonateBombAt(state: FullGameState, cellIdx: number, range: number, _ownerIdx: number) {
   const bx = cellIdx % GRID_WIDTH;
   const by = Math.floor(cellIdx / GRID_WIDTH);
@@ -947,5 +1043,6 @@ function deepCloneState(state: FullGameState): FullGameState {
     })),
     delegated: state.delegated,
     currentSlot: state.currentSlot,
+    currentTick: state.currentTick,
   };
 }

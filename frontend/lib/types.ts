@@ -49,6 +49,8 @@ export interface BombState {
   placedAtSlot: BN;
   detonated: boolean;
   originalIndex?: number; // index in the on-chain bombs array (for detonateBomb TX)
+  placedTick?: number;    // simulation tick when placed
+  explodeTick?: number;   // simulation tick when should detonate
 }
 
 export interface FullGameState {
@@ -57,5 +59,6 @@ export interface FullGameState {
   players: PlayerState[];
   bombs: BombState[];
   delegated: boolean;
-  currentSlot?: number; // for bomb fuse expiry detection
+  currentSlot?: number;   // for on-chain TX validation only
+  currentTick?: number;   // simulation tick (deterministic, rewindable)
 }

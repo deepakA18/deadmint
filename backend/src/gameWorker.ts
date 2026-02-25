@@ -12,6 +12,8 @@ import {
   STATUS_CLAIMED,
   MAX_BOMBS,
   EXPLOSION_DURATION_SLOTS,
+  FUSE_TICKS,
+  EXPLOSION_TICKS,
 } from "./config";
 import {
   fetchFullGameState,
@@ -45,6 +47,9 @@ export class GameWorker {
   private _delegated = false;
   private _delegating = false;
   private _undelegating = false;
+  private _currentTick = 0;
+  private _bombTickMap = new Map<string, { placedTick: number; explodeTick: number }>();
+  private _explosionExpiry = new Map<number, number>(); // cellIndex → expiresAtTick
 
   constructor(gamePda: PublicKey, gameId: BN, maxPlayers: number, initialStatus = STATUS_LOBBY) {
     this.gamePda = gamePda;
@@ -100,6 +105,12 @@ export class GameWorker {
       const prevStatus = this._status;
       this._status = state.game.status;
 
+      // Advance simulation tick — this is the ONLY place currentTick changes.
+      // It is NOT derived from Date.now() or any wall-clock source.
+      if (state.game.status === STATUS_ACTIVE) {
+        this._currentTick += 1;
+      }
+
       // Trigger delegation when game transitions to ACTIVE
       if (prevStatus !== STATUS_ACTIVE && state.game.status === STATUS_ACTIVE && !this._delegated && !this._delegating) {
         this.triggerDelegation();
@@ -114,10 +125,29 @@ export class GameWorker {
       if (state.game.status === STATUS_ACTIVE) {
         await this.crankBombs(state);
         await this.crankGameEnd(state);
+
+        // Track detonation transitions → populate per-cell explosion expiry
+        for (let i = 0; i < MAX_BOMBS; i++) {
+          const bomb = state.game.bombs[i];
+          if (!bomb) continue;
+          const bombKey = `${i}:${bomb.placedAtSlot.toString()}`;
+          if (bomb.detonated && this._bombTickMap.has(bombKey)) {
+            // Bomb just detonated — mark explosion cells with expiry ticks
+            for (let c = 0; c < state.game.cells.length; c++) {
+              if (state.game.cells[c] === 4 /* CELL_EXPLOSION */ && !this._explosionExpiry.has(c)) {
+                this._explosionExpiry.set(c, this._currentTick + EXPLOSION_TICKS);
+              }
+            }
+            this._bombTickMap.delete(bombKey);
+          }
+        }
       }
 
       // Convert to wire format and broadcast
-      const wire = toWireState(state, this._delegated);
+      const wire = toWireState(
+        state, this._delegated,
+        this._currentTick, this._bombTickMap, this._explosionExpiry
+      );
       this._lastWireState = wire;
       broadcastToGame(this.gamePdaStr, { type: "state", data: wire });
     } catch (e) {
@@ -294,21 +324,23 @@ function sleep(ms: number): Promise<void> {
 
 const PUBKEY_DEFAULT = PublicKey.default.toBase58();
 
-function toWireState(state: FetchedGameState, delegated: boolean): WireGameState {
+function toWireState(
+  state: FetchedGameState,
+  delegated: boolean,
+  currentTick: number,
+  bombTickMap: Map<string, { placedTick: number; explodeTick: number }>,
+  explosionExpiry: Map<number, number>,
+): WireGameState {
   const g = state.game;
 
-  // Clear expired explosions in the wire state (on-chain only clears on
-  // next detonateBomb/movePlayer, so without this patch explosions persist
-  // visually if no one acts after a detonation).
+  // Per-cell explosion expiry: each cell clears independently based on ticks.
+  // (On-chain only clears on next detonateBomb/movePlayer, so without this
+  // patch explosions persist visually if no one acts after a detonation.)
   const cells = Array.from(g.cells);
-  const lastDet = typeof g.lastDetonateSlot === "number"
-    ? g.lastDetonateSlot
-    : parseInt(g.lastDetonateSlot.toString());
-  if (lastDet > 0 && state.currentSlot > lastDet + EXPLOSION_DURATION_SLOTS) {
-    for (let i = 0; i < cells.length; i++) {
-      if (cells[i] === 4 /* CELL_EXPLOSION */) {
-        cells[i] = 0 /* CELL_EMPTY */;
-      }
+  for (const [cellIdx, expiresAt] of explosionExpiry) {
+    if (currentTick >= expiresAt && cells[cellIdx] === 4 /* CELL_EXPLOSION */) {
+      cells[cellIdx] = 0 /* CELL_EMPTY */;
+      explosionExpiry.delete(cellIdx);
     }
   }
 
@@ -370,6 +402,18 @@ function toWireState(state: FetchedGameState, delegated: boolean): WireGameState
   for (let i = 0; i < MAX_BOMBS; i++) {
     const b = g.bombs[i];
     if (b && (b.active || b.detonated)) {
+      const bombKey = `${i}:${b.placedAtSlot.toString()}`;
+      // Assign tick data when bomb first seen (composite key prevents slot reuse collision)
+      if (b.active && !b.detonated && !bombTickMap.has(bombKey)) {
+        bombTickMap.set(bombKey, {
+          placedTick: currentTick,
+          explodeTick: currentTick + FUSE_TICKS,
+        });
+      }
+      const ticks = bombTickMap.get(bombKey) ?? {
+        placedTick: currentTick,
+        explodeTick: currentTick + FUSE_TICKS,
+      };
       bombs.push({
         owner: pubkeyOrNull(b.owner),
         x: b.x,
@@ -379,7 +423,15 @@ function toWireState(state: FetchedGameState, delegated: boolean): WireGameState
         placedAtSlot: b.placedAtSlot.toString(),
         active: b.active,
         detonated: b.detonated,
+        placedTick: ticks.placedTick,
+        explodeTick: ticks.explodeTick,
+        originalIndex: i,
       });
+    } else {
+      // Clean up map entries for inactive/cleared bombs
+      for (const key of bombTickMap.keys()) {
+        if (key.startsWith(`${i}:`)) bombTickMap.delete(key);
+      }
     }
   }
 
@@ -391,6 +443,7 @@ function toWireState(state: FetchedGameState, delegated: boolean): WireGameState
     currentSlot: state.currentSlot,
     timestamp: Date.now(),
     delegated,
+    currentTick,
   };
 }
 

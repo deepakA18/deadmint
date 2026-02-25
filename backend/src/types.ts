@@ -46,6 +46,9 @@ export interface WireBombState {
   placedAtSlot: string;
   active: boolean;
   detonated: boolean;
+  placedTick: number;       // simulation tick when bomb first seen
+  explodeTick: number;      // placedTick + FUSE_TICKS
+  originalIndex: number;    // on-chain bomb slot index (0-11)
 }
 
 export interface WireGameState {
@@ -59,6 +62,7 @@ export interface WireGameState {
   currentSlot: number;
   timestamp: number;
   delegated: boolean;
+  currentTick: number;      // simulation tick counter
 }
 
 // ─── Server → Client messages ──────────────────────────────
