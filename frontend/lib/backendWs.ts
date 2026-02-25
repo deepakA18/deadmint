@@ -47,6 +47,7 @@ interface WireGameState {
   }[];
   currentSlot: number;
   timestamp: number;
+  delegated: boolean;
 }
 
 type ServerMessage =
@@ -112,7 +113,7 @@ function wireToFullState(wire: WireGameState): FullGameState {
     detonated: b.detonated,
   }));
 
-  return { config, grid, players, bombs };
+  return { config, grid, players, bombs, delegated: wire.delegated ?? false };
 }
 
 // ─── WebSocket Connection ──────────────────────────────────

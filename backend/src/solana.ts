@@ -5,18 +5,21 @@ import {
   Transaction,
 } from "@solana/web3.js";
 import { Program, AnchorProvider, BN } from "@coral-xyz/anchor";
-import { RPC_URL, PROGRAM_ID_STR, loadCrankKeypair } from "./config";
+import { RPC_URL, EPHEMERAL_RPC_URL, PROGRAM_ID_STR, DELEGATION_PROGRAM_ID_STR, loadCrankKeypair } from "./config";
 import idlJson from "./idl/deadmint.json";
 import type { Deadmint } from "./idl/deadmint";
 
 // ─── Constants ─────────────────────────────────────────────
 
 export const PROGRAM_ID = new PublicKey(PROGRAM_ID_STR);
+export const DELEGATION_PROGRAM_ID = new PublicKey(DELEGATION_PROGRAM_ID_STR);
 
 // ─── Singletons ────────────────────────────────────────────
 
 let _connection: Connection | null = null;
+let _erConnection: Connection | null = null;
 let _program: Program<Deadmint> | null = null;
+let _erProgram: Program<Deadmint> | null = null;
 let _crankKeypair: Keypair | null = null;
 
 export function getConnection(): Connection {
@@ -24,20 +27,38 @@ export function getConnection(): Connection {
   return _connection;
 }
 
+export function getErConnection(): Connection {
+  if (!_erConnection) _erConnection = new Connection(EPHEMERAL_RPC_URL, "confirmed");
+  return _erConnection;
+}
+
+function makeDummyWallet() {
+  return {
+    publicKey: PublicKey.default,
+    signTransaction: async (tx: Transaction) => tx,
+    signAllTransactions: async (txs: Transaction[]) => txs,
+  };
+}
+
 export function getProgram(): Program<Deadmint> {
   if (!_program) {
-    const conn = getConnection();
-    const dummyWallet = {
-      publicKey: PublicKey.default,
-      signTransaction: async (tx: Transaction) => tx,
-      signAllTransactions: async (txs: Transaction[]) => txs,
-    };
-    const provider = new AnchorProvider(conn, dummyWallet as any, {
+    const provider = new AnchorProvider(getConnection(), makeDummyWallet() as any, {
       commitment: "confirmed",
     });
     _program = new Program(idlJson as any, provider) as unknown as Program<Deadmint>;
   }
   return _program;
+}
+
+export function getErProgram(): Program<Deadmint> {
+  if (!_erProgram) {
+    const provider = new AnchorProvider(getErConnection(), makeDummyWallet() as any, {
+      commitment: "confirmed",
+      skipPreflight: true,
+    });
+    _erProgram = new Program(idlJson as any, provider) as unknown as Program<Deadmint>;
+  }
+  return _erProgram;
 }
 
 export function getCrankKeypair(): Keypair {
@@ -121,13 +142,15 @@ export interface FetchedGameState {
 
 /**
  * Fetches game + all player accounts in a single batched RPC call.
+ * When useEr=true, fetches from the Ephemeral Rollup instead of base layer.
  */
 export async function fetchFullGameState(
   gamePda: PublicKey,
-  maxPlayers: number
+  maxPlayers: number,
+  useEr = false
 ): Promise<FetchedGameState | null> {
-  const conn = getConnection();
-  const program = getProgram();
+  const conn = useEr ? getErConnection() : getConnection();
+  const program = useEr ? getErProgram() : getProgram();
 
   try {
     const playerPdas = getAllPlayerPdas(gamePda, maxPlayers);
@@ -170,15 +193,16 @@ export async function fetchFullGameState(
 
 /**
  * Sends a detonateBomb TX signed by the crank keypair.
- * Returns the TX signature or null on expected errors.
+ * When useEr=true, sends to Ephemeral Rollup (gasless, skipPreflight).
  */
 export async function sendDetonateBomb(
   gamePda: PublicKey,
   bombIndex: number,
-  playerPdas: PublicKey[]
+  playerPdas: PublicKey[],
+  useEr = false
 ): Promise<string | null> {
-  const conn = getConnection();
-  const program = getProgram();
+  const conn = useEr ? getErConnection() : getConnection();
+  const program = useEr ? getErProgram() : getProgram();
   const crank = getCrankKeypair();
 
   const ix = await program.methods
@@ -218,13 +242,15 @@ export async function sendDetonateBomb(
 
 /**
  * Sends a checkGameEnd TX signed by the crank keypair.
+ * When useEr=true, sends to Ephemeral Rollup.
  */
 export async function sendCheckGameEnd(
   gamePda: PublicKey,
-  playerPdas: PublicKey[]
+  playerPdas: PublicKey[],
+  useEr = false
 ): Promise<string | null> {
-  const conn = getConnection();
-  const program = getProgram();
+  const conn = useEr ? getErConnection() : getConnection();
+  const program = useEr ? getErProgram() : getProgram();
   const crank = getCrankKeypair();
 
   const ix = await program.methods
@@ -250,6 +276,85 @@ export async function sendCheckGameEnd(
     const msg = e?.message || "";
     if (msg.includes("GameNotActive")) return null;
     console.error("checkGameEnd failed:", msg);
+    return null;
+  }
+}
+
+// ─── Delegation / Undelegation ─────────────────────────────
+
+/**
+ * Checks if a PDA is currently delegated (owned by the delegation program on base layer).
+ */
+export async function isDelegated(pda: PublicKey): Promise<boolean> {
+  const conn = getConnection();
+  const info = await conn.getAccountInfo(pda);
+  if (!info) return false;
+  return info.owner.equals(DELEGATION_PROGRAM_ID);
+}
+
+/**
+ * Sends a delegate TX for a single PDA (game or player) to base layer.
+ * The seeds are the PDA derivation seeds (e.g. ["game", gameIdLE] or ["player", gamePda, index]).
+ */
+export async function sendDelegatePda(
+  pda: PublicKey,
+  seeds: Buffer[]
+): Promise<string | null> {
+  const conn = getConnection();
+  const program = getProgram();
+  const crank = getCrankKeypair();
+
+  try {
+    const seedsArg = seeds.map((s) => s as Buffer);
+
+    const ix = await program.methods
+      .delegate(seedsArg)
+      .accountsPartial({
+        payer: crank.publicKey,
+        pda: pda,
+      })
+      .instruction();
+
+    const tx = new Transaction().add(ix);
+    tx.feePayer = crank.publicKey;
+    tx.recentBlockhash = (await conn.getLatestBlockhash()).blockhash;
+    tx.sign(crank);
+
+    const sig = await conn.sendRawTransaction(tx.serialize(), { skipPreflight: true });
+    return sig;
+  } catch (e: any) {
+    console.error(`[Delegate] Failed for ${pda.toBase58().slice(0, 8)}:`, e?.message || e);
+    return null;
+  }
+}
+
+/**
+ * Sends an undelegate TX for a single PDA to the Ephemeral Rollup.
+ * This commits state back to base layer and returns ownership to the program.
+ */
+export async function sendUndelegatePda(pda: PublicKey): Promise<string | null> {
+  const conn = getErConnection();
+  const program = getErProgram();
+  const crank = getCrankKeypair();
+
+  try {
+    const ix = await program.methods
+      .undelegate()
+      .accountsPartial({
+        payer: crank.publicKey,
+        pda: pda,
+      })
+      .instruction();
+
+    const tx = new Transaction().add(ix);
+    tx.feePayer = crank.publicKey;
+    tx.recentBlockhash = (await conn.getLatestBlockhash()).blockhash;
+    tx.sign(crank);
+
+    const sig = await conn.sendRawTransaction(tx.serialize(), { skipPreflight: true });
+    return sig;
+  } catch (e: any) {
+    console.error(`[Undelegate] Failed for ${pda.toBase58().slice(0, 8)}:`, e?.message || e);
     return null;
   }
 }

@@ -54,4 +54,5 @@ export interface FullGameState {
   grid: GridState;
   players: PlayerState[];
   bombs: BombState[];
+  delegated: boolean;
 }

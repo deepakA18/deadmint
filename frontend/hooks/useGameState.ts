@@ -132,8 +132,29 @@ export function useGameState({ mode, liveConfig }: UseGameStateOptions): UseGame
   const localPlayerFoundRef = useRef(false);
   const explosionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Optimistic movement: keep local player position until on-chain catches up
-  const optimisticPosRef = useRef<{ x: number; y: number; until: number } | null>(null);
+  // Optimistic movement: track pending moves so WS doesn't override local position.
+  // pendingMoves counts in-flight TXs. While > 0, WS uses our optimistic x/y.
+  const optimisticRef = useRef<{ x: number; y: number; pendingMoves: number }>({
+    x: 0, y: 0, pendingMoves: 0,
+  });
+  // Server's last-known player position (for bomb placement at correct on-chain position)
+  const serverPosRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  // Optimistic grid cells: map of cellIndex → cellValue that WS must not override.
+  // Entries are added on detonation and removed on cleanup.
+  const protectedCellsRef = useRef<Map<number, number>>(new Map());
+  // Track optimistic bomb placement for server duplicate suppression.
+  // optimisticIdx = where we visually show the bomb (player's visual position).
+  // suppressIdx = where the server will place it on-chain (server's lagging position).
+  // seenServerBomb = true once we've seen the server place the bomb at suppressIdx.
+  const pendingBombRef = useRef<{
+    optimisticIdx: number;
+    suppressIdx: number;
+    active: boolean;
+    seenServerBomb: boolean;
+  } | null>(null);
+  // Target activeBombs until server catches up. -1 = not tracking.
+  // Prevents WS from resetting our optimistic activeBombs++ back to 0.
+  const targetActiveBombsRef = useRef(-1);
   const localPlayerIndexRef = useRef(localPlayerIndex);
   localPlayerIndexRef.current = localPlayerIndex;
 
@@ -148,22 +169,81 @@ export function useGameState({ mode, liveConfig }: UseGameStateOptions): UseGame
       : liveConfig.wallet.publicKey;
 
     const conn = connectToGame(gamePdaStr, (state) => {
-      // Preserve optimistic local player position to avoid rubber-banding
-      const opt = optimisticPosRef.current;
-      if (opt && Date.now() < opt.until && localPlayerFoundRef.current) {
+      // Save server's raw player position BEFORE optimistic overrides
+      if (localPlayerFoundRef.current) {
+        const lpi = localPlayerIndexRef.current;
+        const sp = state.players[lpi];
+        if (sp) {
+          serverPosRef.current.x = sp.x;
+          serverPosRef.current.y = sp.y;
+        }
+      }
+
+      // Preserve optimistic local player position while moves are in-flight
+      const opt = optimisticRef.current;
+      if (opt.pendingMoves > 0 && localPlayerFoundRef.current) {
         const lpi = localPlayerIndexRef.current;
         const serverPlayer = state.players[lpi];
-        // If server already caught up to our position, clear optimistic
-        if (serverPlayer && serverPlayer.x === opt.x && serverPlayer.y === opt.y) {
-          optimisticPosRef.current = null;
-        } else if (serverPlayer && serverPlayer.alive) {
-          // Override server position with our optimistic one
-          serverPlayer.x = opt.x;
-          serverPlayer.y = opt.y;
+        if (serverPlayer && serverPlayer.alive) {
+          if (serverPlayer.x === opt.x && serverPlayer.y === opt.y) {
+            opt.pendingMoves = 0;
+          } else {
+            serverPlayer.x = opt.x;
+            serverPlayer.y = opt.y;
+          }
         }
-      } else {
-        optimisticPosRef.current = null;
       }
+
+      // Suppress server's duplicate bomb at server position.
+      // When we place a bomb optimistically at the player's VISUAL position, the
+      // on-chain TX places it at the SERVER position (which may lag behind). This
+      // suppresses the server's version to prevent double-bomb visuals.
+      const pb = pendingBombRef.current;
+      if (pb && pb.active && pb.suppressIdx !== pb.optimisticIdx) {
+        const cellAtSuppress = state.grid.cells[pb.suppressIdx];
+        if (cellAtSuppress === CELL_BOMB) {
+          // Server placed our bomb at server position — suppress it
+          state.grid.cells[pb.suppressIdx] = CELL_EMPTY;
+          pb.seenServerBomb = true;
+        } else if (pb.seenServerBomb || cellAtSuppress === CELL_EXPLOSION) {
+          // Server bomb detonated/cleared — release all optimistic protections
+          pb.active = false;
+          protectedCellsRef.current.delete(pb.optimisticIdx);
+          targetActiveBombsRef.current = -1;
+        }
+        // If !seenServerBomb and cell is EMPTY: TX not confirmed yet, keep waiting
+      }
+
+      // Preserve optimistic activeBombs — prevent WS from undoing our increment.
+      // Without this, WS resets activeBombs to 0 before server confirms our TX,
+      // letting keyboard repeat place unlimited bombs.
+      if (targetActiveBombsRef.current >= 0 && localPlayerFoundRef.current) {
+        const sp = state.players[localPlayerIndexRef.current];
+        if (sp) {
+          if (sp.activeBombs >= targetActiveBombsRef.current) {
+            // Server caught up (TX confirmed) — stop overriding
+            targetActiveBombsRef.current = -1;
+          } else {
+            sp.activeBombs = targetActiveBombsRef.current;
+          }
+        }
+      }
+
+      // Preserve optimistic grid cells (bombs/explosions) from WS override
+      const pCells = protectedCellsRef.current;
+      if (pCells.size > 0) {
+        for (const [idx, localValue] of pCells) {
+          const serverValue = state.grid.cells[idx];
+          // Server caught up — remove protection
+          if (serverValue === localValue) {
+            pCells.delete(idx);
+          } else {
+            // Server is behind — keep our optimistic cell
+            state.grid.cells[idx] = localValue;
+          }
+        }
+      }
+
       setGameState(state);
       setIsLoading(false);
 
@@ -178,6 +258,11 @@ export function useGameState({ mode, liveConfig }: UseGameStateOptions): UseGame
         if (idx !== -1) {
           setLocalPlayerIndex(idx);
           localPlayerFoundRef.current = true;
+          // Initialize position refs from first known server state
+          serverPosRef.current.x = state.players[idx].x;
+          serverPosRef.current.y = state.players[idx].y;
+          optimisticRef.current.x = state.players[idx].x;
+          optimisticRef.current.y = state.players[idx].y;
         }
       }
 
@@ -231,6 +316,54 @@ export function useGameState({ mode, liveConfig }: UseGameStateOptions): UseGame
     };
   }, [mode, liveConfig?.gamePda.toBase58()]);
 
+  // Shared bomb detonation scheduler (used by both live + mock modes)
+  const scheduleBombDetonation = useCallback(
+    (cellIdx: number, range: number, ownerIdx: number) => {
+      setTimeout(() => {
+        setGameState((prev) => {
+          if (!prev || prev.config.status !== STATUS_ACTIVE) return prev;
+          const next = deepCloneState(prev);
+
+          if (next.grid.cells[cellIdx] !== CELL_BOMB) return next;
+
+          detonateBombAt(next, cellIdx, range, ownerIdx);
+
+          if (next.players[ownerIdx]) {
+            next.players[ownerIdx].activeBombs = Math.max(0, next.players[ownerIdx].activeBombs - 1);
+          }
+
+          checkPlayerDeaths(next);
+
+          // Protect explosion cells from WS override
+          const pCells = protectedCellsRef.current;
+          for (let i = 0; i < GRID_CELLS; i++) {
+            if (next.grid.cells[i] === CELL_EXPLOSION) {
+              pCells.set(i, CELL_EXPLOSION);
+            }
+          }
+
+          // Clear explosion visuals after 500ms
+          setTimeout(() => {
+            setGameState((prev2) => {
+              if (!prev2) return prev2;
+              const next2 = deepCloneState(prev2);
+              for (let i = 0; i < GRID_CELLS; i++) {
+                if (next2.grid.cells[i] === CELL_EXPLOSION) {
+                  next2.grid.cells[i] = CELL_EMPTY;
+                  protectedCellsRef.current.delete(i);
+                }
+              }
+              return next2;
+            });
+          }, 500);
+
+          return next;
+        });
+      }, 3000);
+    },
+    []
+  );
+
   // Live move player (simplified — no crank, backend handles detonation)
   const liveMove = useCallback(
     (direction: number) => {
@@ -245,8 +378,10 @@ export function useGameState({ mode, liveConfig }: UseGameStateOptions): UseGame
         isWalkable(gameState.grid.cells[ny * GRID_WIDTH + nx]);
 
       if (canMove) {
-        // Record optimistic position — WS handler will preserve it for 2s
-        optimisticPosRef.current = { x: nx, y: ny, until: Date.now() + 2000 };
+        // Record optimistic position — WS handler preserves it until server catches up
+        optimisticRef.current.x = nx;
+        optimisticRef.current.y = ny;
+        optimisticRef.current.pendingMoves++;
 
         // Immediately update local state
         setGameState((prev) => {
@@ -258,7 +393,7 @@ export function useGameState({ mode, liveConfig }: UseGameStateOptions): UseGame
         });
       }
 
-      // Fire TX in background — on-chain state reconciles via WS
+      // Fire TX in background (fire-and-forget) — on-chain state reconciles via WS
       const signer: gameService.Signer = liveConfig.sessionKey || liveConfig.wallet;
       const [localPlayerPda] = derivePlayerPda(liveConfig.gamePda, localPlayerIndex);
       gameService.movePlayer(
@@ -266,32 +401,96 @@ export function useGameState({ mode, liveConfig }: UseGameStateOptions): UseGame
         liveConfig.gamePda,
         localPlayerPda,
         direction,
+        gameState.delegated,
       ).catch((e) => {
         console.error("Move failed:", e);
-        // TX failed — clear optimistic position so next WS update corrects it
-        optimisticPosRef.current = null;
+        // TX failed — decrement pending so next WS update corrects position
+        optimisticRef.current.pendingMoves = Math.max(0, optimisticRef.current.pendingMoves - 1);
       });
     },
     [liveConfig, gameState, localPlayerIndex]
   );
 
-  // Live place bomb
-  const livePlaceBomb = useCallback(async () => {
+  // Live place bomb — place optimistically at VISUAL position (where player sees themselves).
+  // Detonation is handled entirely by the backend crank (~5s fuse on-chain).
+  // We do NOT schedule local detonation — that caused phantom double-detonations.
+  const livePlaceBomb = useCallback(() => {
     if (!liveConfig || !gameState || gameState.config.status !== STATUS_ACTIVE) return;
     const p = gameState.players[localPlayerIndex];
     if (!p || !p.alive || p.activeBombs >= p.maxBombs) return;
 
-    try {
-      const signer: gameService.Signer = liveConfig.sessionKey || liveConfig.wallet;
-      const [localPlayerPda] = derivePlayerPda(liveConfig.gamePda, localPlayerIndex);
-      await gameService.placeBomb(
-        signer,
-        liveConfig.gamePda,
-        localPlayerPda,
-      );
-    } catch (e) {
+    // Player's current VISUAL position (from React state, includes optimistic moves)
+    const bombIdx = p.y * GRID_WIDTH + p.x;
+
+    // Where server will actually place the bomb on-chain (may lag behind visual)
+    const { x: sx, y: sy } = serverPosRef.current;
+    const suppressIdx = sy * GRID_WIDTH + sx;
+
+    // Optimistic: show bomb at visual position immediately
+    setGameState((prev) => {
+      if (!prev) return prev;
+      const next = deepCloneState(prev);
+      if (next.grid.cells[bombIdx] === CELL_EMPTY) {
+        next.grid.cells[bombIdx] = CELL_BOMB;
+        next.players[localPlayerIndex].activeBombs++;
+      }
+      return next;
+    });
+
+    // Protect bomb cell from WS override
+    protectedCellsRef.current.set(bombIdx, CELL_BOMB);
+
+    // Lock activeBombs so WS can't reset our increment (prevents keyboard-repeat duplicates)
+    targetActiveBombsRef.current = p.activeBombs + 1;
+
+    // Track for server duplicate suppression
+    pendingBombRef.current = {
+      optimisticIdx: bombIdx,
+      suppressIdx,
+      active: true,
+      seenServerBomb: false,
+    };
+
+    // Safety: clean up after 10s if server never confirms
+    const capturedIdx = bombIdx;
+    setTimeout(() => {
+      const cur = pendingBombRef.current;
+      if (cur && cur.optimisticIdx === capturedIdx && cur.active) {
+        cur.active = false;
+        protectedCellsRef.current.delete(capturedIdx);
+        targetActiveBombsRef.current = -1;
+      }
+    }, 10000);
+
+    // Fire TX in background
+    const signer: gameService.Signer = liveConfig.sessionKey || liveConfig.wallet;
+    const [localPlayerPda] = derivePlayerPda(liveConfig.gamePda, localPlayerIndex);
+    gameService.placeBomb(
+      signer,
+      liveConfig.gamePda,
+      localPlayerPda,
+      gameState.delegated,
+    ).catch((e) => {
       console.error("Place bomb failed:", e);
-    }
+      // Revert optimistic state on TX failure
+      const cur = pendingBombRef.current;
+      if (cur && cur.optimisticIdx === capturedIdx) {
+        cur.active = false;
+      }
+      protectedCellsRef.current.delete(capturedIdx);
+      targetActiveBombsRef.current = -1;
+      setGameState((prev) => {
+        if (!prev) return prev;
+        const next = deepCloneState(prev);
+        if (next.grid.cells[capturedIdx] === CELL_BOMB) {
+          next.grid.cells[capturedIdx] = CELL_EMPTY;
+          next.players[localPlayerIndex].activeBombs = Math.max(
+            0, next.players[localPlayerIndex].activeBombs - 1
+          );
+        }
+        return next;
+      });
+    });
   }, [liveConfig, gameState, localPlayerIndex]);
 
   // ─── MOCK MODE ────────────────────────────────────────────
@@ -323,7 +522,7 @@ export function useGameState({ mode, liveConfig }: UseGameStateOptions): UseGame
 
     const players = [0, 1, 2, 3].map(createMockPlayer);
 
-    setGameState({ config, grid, players, bombs: [] });
+    setGameState({ config, grid, players, bombs: [], delegated: false });
     setIsLoading(false);
   }, [mode]);
 
@@ -387,43 +586,6 @@ export function useGameState({ mode, liveConfig }: UseGameStateOptions): UseGame
       if (aiTimerRef.current) clearInterval(aiTimerRef.current);
     };
   }, [mode, gameState?.config.status]);
-
-  const scheduleBombDetonation = useCallback(
-    (cellIdx: number, range: number, ownerIdx: number) => {
-      setTimeout(() => {
-        setGameState((prev) => {
-          if (!prev || prev.config.status !== STATUS_ACTIVE) return prev;
-          const next = deepCloneState(prev);
-
-          if (next.grid.cells[cellIdx] !== CELL_BOMB) return next;
-
-          detonateBombAt(next, cellIdx, range, ownerIdx);
-
-          if (next.players[ownerIdx]) {
-            next.players[ownerIdx].activeBombs = Math.max(0, next.players[ownerIdx].activeBombs - 1);
-          }
-
-          checkPlayerDeaths(next);
-
-          setTimeout(() => {
-            setGameState((prev2) => {
-              if (!prev2) return prev2;
-              const next2 = deepCloneState(prev2);
-              for (let i = 0; i < GRID_CELLS; i++) {
-                if (next2.grid.cells[i] === CELL_EXPLOSION) {
-                  next2.grid.cells[i] = CELL_EMPTY;
-                }
-              }
-              return next2;
-            });
-          }, 500);
-
-          return next;
-        });
-      }, 3000);
-    },
-    []
-  );
 
   const mockMove = useCallback(
     (direction: number) => {
@@ -629,5 +791,6 @@ function deepCloneState(state: FullGameState): FullGameState {
       ...b,
       placedAtSlot: new BN(b.placedAtSlot.toString()),
     })),
+    delegated: state.delegated,
   };
 }

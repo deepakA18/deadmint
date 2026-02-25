@@ -8,7 +8,9 @@ export const PORT = parseInt(process.env.PORT || "8080");
 const rpcUrl = process.env.RPC_URL;
 if (!rpcUrl) throw new Error("Set RPC_URL in .env (e.g. https://devnet.helius-rpc.com/?api-key=YOUR_KEY)");
 export const RPC_URL = rpcUrl;
+export const EPHEMERAL_RPC_URL = process.env.EPHEMERAL_RPC_URL || "https://devnet-as.magicblock.app";
 export const PROGRAM_ID_STR = "Aj2fUK4fdw6Y6BCgtuUPsBL761AAgFjNjzt5Zd3Sp2Qb";
+export const DELEGATION_PROGRAM_ID_STR = "DELeGGvXpWV2fqJUhqcF5ZSYMS4JTLjteaAMARRSaeSh";
 
 // ─── Timing ──────────────────────────────────────────────────
 
@@ -16,6 +18,7 @@ export const POLL_INTERVAL_ACTIVE_MS = 800;
 export const POLL_INTERVAL_LOBBY_MS = 3000;
 export const CRANK_COOLDOWN_MS = 500;
 export const GAME_CLEANUP_AFTER_MS = 120_000; // 2 min after finish
+export const DELEGATION_TIMEOUT_MS = 10_000; // max wait for delegation confirmation
 
 // ─── On-chain constants (mirrored from state.rs) ────────────
 

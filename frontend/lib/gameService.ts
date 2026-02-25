@@ -141,13 +141,27 @@ function getSignerPublicKey(signer: Signer): PublicKey {
   return signer.publicKey;
 }
 
+// Cache recent blockhash to avoid a round-trip on every gameplay TX
+let _cachedBlockhash: { hash: string; fetchedAt: number } | null = null;
+const BLOCKHASH_TTL_MS = 5000; // refresh every 5s (slots are ~400ms)
+
+async function getRecentBlockhash(connection: Connection): Promise<string> {
+  const now = Date.now();
+  if (_cachedBlockhash && now - _cachedBlockhash.fetchedAt < BLOCKHASH_TTL_MS) {
+    return _cachedBlockhash.hash;
+  }
+  const { blockhash } = await connection.getLatestBlockhash();
+  _cachedBlockhash = { hash: blockhash, fetchedAt: now };
+  return blockhash;
+}
+
 async function sendTxWithSessionKey(
   sessionKey: Keypair,
   connection: Connection,
   tx: Transaction
 ): Promise<string> {
   tx.feePayer = sessionKey.publicKey;
-  tx.recentBlockhash = (await connection.getLatestBlockhash()).blockhash;
+  tx.recentBlockhash = await getRecentBlockhash(connection);
   tx.sign(sessionKey);
   return connection.sendRawTransaction(tx.serialize(), { skipPreflight: true });
 }
@@ -471,7 +485,7 @@ export async function fetchFullGameState(
         detonated: b.detonated,
       }));
 
-    return { config, grid, players, bombs };
+    return { config, grid, players, bombs, delegated: false };
   } catch (e) {
     console.error("fetchFullGameState error:", e);
     return null;

@@ -4,6 +4,7 @@ import {
   POLL_INTERVAL_ACTIVE_MS,
   POLL_INTERVAL_LOBBY_MS,
   CRANK_COOLDOWN_MS,
+  DELEGATION_TIMEOUT_MS,
   STATUS_LOBBY,
   STATUS_ACTIVE,
   STATUS_FINISHED,
@@ -14,8 +15,13 @@ import {
 import {
   fetchFullGameState,
   getAllPlayerPdas,
+  deriveGamePda,
+  derivePlayerPda,
   sendDetonateBomb,
   sendCheckGameEnd,
+  sendDelegatePda,
+  sendUndelegatePda,
+  isDelegated,
   type FetchedGameState,
 } from "./solana";
 import type { WireGameState, WireBombState, WirePlayerState, ServerMessage } from "./types";
@@ -35,6 +41,9 @@ export class GameWorker {
   private checkGameEndSent = false;
   private _lastWireState: WireGameState | null = null;
   private _status: number;
+  private _delegated = false;
+  private _delegating = false;
+  private _undelegating = false;
 
   constructor(gamePda: PublicKey, gameId: BN, maxPlayers: number, initialStatus = STATUS_LOBBY) {
     this.gamePda = gamePda;
@@ -80,13 +89,25 @@ export class GameWorker {
     if (!this.running) return;
 
     try {
-      const state = await fetchFullGameState(this.gamePda, this.maxPlayers);
+      // Fetch from ER when delegated, otherwise from base layer
+      const state = await fetchFullGameState(this.gamePda, this.maxPlayers, this._delegated);
       if (!state) {
         this.scheduleNext();
         return;
       }
 
+      const prevStatus = this._status;
       this._status = state.game.status;
+
+      // Trigger delegation when game transitions to ACTIVE
+      if (prevStatus !== STATUS_ACTIVE && state.game.status === STATUS_ACTIVE && !this._delegated && !this._delegating) {
+        this.triggerDelegation();
+      }
+
+      // Trigger undelegation when game transitions to FINISHED while delegated
+      if (state.game.status === STATUS_FINISHED && this._delegated && !this._undelegating) {
+        this.triggerUndelegation();
+      }
 
       // Crank bombs if active
       if (state.game.status === STATUS_ACTIVE) {
@@ -95,7 +116,7 @@ export class GameWorker {
       }
 
       // Convert to wire format and broadcast
-      const wire = toWireState(state);
+      const wire = toWireState(state, this._delegated);
       this._lastWireState = wire;
       broadcastToGame(this.gamePdaStr, { type: "state", data: wire });
     } catch (e) {
@@ -128,7 +149,7 @@ export class GameWorker {
 
     // Send up to 2 detonations per tick (TX size limits)
     for (const idx of expiredIndices.slice(0, 2)) {
-      const sig = await sendDetonateBomb(this.gamePda, idx, playerPdas);
+      const sig = await sendDetonateBomb(this.gamePda, idx, playerPdas, this._delegated);
       if (sig) {
         console.log(`[Crank] detonateBomb(${idx}) for ${this.gamePdaStr.slice(0, 8)}: ${sig.slice(0, 16)}...`);
         broadcastToGame(this.gamePdaStr, { type: "crank", action: "detonateBomb", tx: sig });
@@ -151,7 +172,7 @@ export class GameWorker {
     // Only 0 or 1 alive — time to end
     this.checkGameEndSent = true;
     const playerPdas = getAllPlayerPdas(this.gamePda, this.maxPlayers);
-    const sig = await sendCheckGameEnd(this.gamePda, playerPdas);
+    const sig = await sendCheckGameEnd(this.gamePda, playerPdas, this._delegated);
 
     if (sig) {
       console.log(`[Crank] checkGameEnd for ${this.gamePdaStr.slice(0, 8)}: ${sig.slice(0, 16)}...`);
@@ -161,13 +182,118 @@ export class GameWorker {
       this.checkGameEndSent = false;
     }
   }
+
+  // ─── Delegation Lifecycle ───────────────────────────────
+
+  /**
+   * Delegates the Game PDA and all Player PDAs to the Ephemeral Rollup.
+   * Runs asynchronously (fire-and-forget from tick).
+   */
+  private async triggerDelegation() {
+    this._delegating = true;
+    const tag = this.gamePdaStr.slice(0, 8);
+    console.log(`[ER] Delegating game ${tag}...`);
+
+    try {
+      // Build seeds for game PDA: ["game", gameId as LE u64]
+      const gameIdLE = Buffer.alloc(8);
+      gameIdLE.writeBigUInt64LE(BigInt(this.gameId.toString()));
+      const gameSeeds = [Buffer.from("game"), gameIdLE];
+
+      // Delegate game PDA
+      const gameSig = await sendDelegatePda(this.gamePda, gameSeeds);
+      if (!gameSig) {
+        console.error(`[ER] Game delegation failed for ${tag}, falling back to base layer`);
+        this._delegating = false;
+        return;
+      }
+      console.log(`[ER] Game PDA delegated: ${gameSig.slice(0, 16)}...`);
+
+      // Delegate all player PDAs
+      for (let i = 0; i < this.maxPlayers; i++) {
+        const [playerPda] = derivePlayerPda(this.gamePda, i);
+        const playerSeeds = [Buffer.from("player"), this.gamePda.toBuffer(), Buffer.from([i])];
+        const pSig = await sendDelegatePda(playerPda, playerSeeds);
+        if (pSig) {
+          console.log(`[ER] Player ${i} PDA delegated: ${pSig.slice(0, 16)}...`);
+        } else {
+          console.warn(`[ER] Player ${i} delegation failed for ${tag}`);
+        }
+      }
+
+      // Poll until game PDA is confirmed delegated on base layer
+      const deadline = Date.now() + DELEGATION_TIMEOUT_MS;
+      while (Date.now() < deadline) {
+        if (await isDelegated(this.gamePda)) {
+          this._delegated = true;
+          this._delegating = false;
+          console.log(`[ER] Delegation confirmed for game ${tag}`);
+          return;
+        }
+        await sleep(500);
+      }
+
+      console.warn(`[ER] Delegation timeout for ${tag}, continuing on base layer`);
+    } catch (e) {
+      console.error(`[ER] Delegation error for ${tag}:`, e);
+    }
+    this._delegating = false;
+  }
+
+  /**
+   * Undelegates all accounts — commits state back to base layer.
+   * Runs asynchronously when game finishes.
+   */
+  private async triggerUndelegation() {
+    this._undelegating = true;
+    const tag = this.gamePdaStr.slice(0, 8);
+    console.log(`[ER] Undelegating game ${tag}...`);
+
+    try {
+      // Undelegate player PDAs first, then game PDA
+      for (let i = 0; i < this.maxPlayers; i++) {
+        const [playerPda] = derivePlayerPda(this.gamePda, i);
+        const pSig = await sendUndelegatePda(playerPda);
+        if (pSig) {
+          console.log(`[ER] Player ${i} undelegated: ${pSig.slice(0, 16)}...`);
+        }
+      }
+
+      const gameSig = await sendUndelegatePda(this.gamePda);
+      if (gameSig) {
+        console.log(`[ER] Game PDA undelegated: ${gameSig.slice(0, 16)}...`);
+      }
+
+      // Poll until game PDA ownership returns to our program on base layer
+      const deadline = Date.now() + DELEGATION_TIMEOUT_MS;
+      while (Date.now() < deadline) {
+        if (!(await isDelegated(this.gamePda))) {
+          this._delegated = false;
+          this._undelegating = false;
+          console.log(`[ER] Undelegation confirmed for game ${tag}`);
+          return;
+        }
+        await sleep(500);
+      }
+
+      console.warn(`[ER] Undelegation timeout for ${tag}`);
+    } catch (e) {
+      console.error(`[ER] Undelegation error for ${tag}:`, e);
+    }
+    this._delegated = false;
+    this._undelegating = false;
+  }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
 }
 
 // ─── State Conversion ──────────────────────────────────────
 
 const PUBKEY_DEFAULT = PublicKey.default.toBase58();
 
-function toWireState(state: FetchedGameState): WireGameState {
+function toWireState(state: FetchedGameState, delegated: boolean): WireGameState {
   const g = state.game;
 
   // Clear expired explosions in the wire state (on-chain only clears on
@@ -261,6 +387,7 @@ function toWireState(state: FetchedGameState): WireGameState {
     bombs,
     currentSlot: state.currentSlot,
     timestamp: Date.now(),
+    delegated,
   };
 }
 

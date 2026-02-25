@@ -4,7 +4,7 @@ import { PublicKey } from "@solana/web3.js";
 export const RPC_URL =
   process.env.NEXT_PUBLIC_RPC_URL || "/api/rpc";
 export const EPHEMERAL_RPC_URL =
-  process.env.NEXT_PUBLIC_EPHEMERAL_RPC || "https://devnet.magicblock.app";
+  process.env.NEXT_PUBLIC_EPHEMERAL_RPC || "https://devnet-as.magicblock.app";
 
 // --- Program ID (single Anchor program) ---
 export const PROGRAM_ID = new PublicKey(

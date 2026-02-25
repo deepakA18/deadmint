@@ -57,6 +57,7 @@ export interface WireGameState {
   bombs: WireBombState[];
   currentSlot: number;
   timestamp: number;
+  delegated: boolean;
 }
 
 // ─── Server → Client messages ──────────────────────────────

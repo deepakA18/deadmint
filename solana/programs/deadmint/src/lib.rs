@@ -1,4 +1,5 @@
 use anchor_lang::prelude::*;
+use ephemeral_rollups_sdk::anchor::ephemeral;
 
 pub mod errors;
 pub mod instructions;
@@ -6,8 +7,9 @@ pub mod state;
 
 use instructions::*;
 
-declare_id!("Aj2fUK4fdw6Y6BCgtuUPsBL761AAgFjNjzt5Zd3Sp2Qb");
+declare_id!("GLnaE4KiQUGDZTtDP1YnTV4dtUbXudBk1kApueC791c");
 
+#[ephemeral]
 #[program]
 pub mod deadmint {
     use super::*;
@@ -43,5 +45,16 @@ pub mod deadmint {
 
     pub fn claim_prize(ctx: Context<ClaimPrize>) -> Result<()> {
         instructions::claim_prize::handler(ctx)
+    }
+
+    /// Delegate a PDA (Game or Player) to the Ephemeral Rollup validator.
+    /// Seeds are passed as instruction data so the SDK can verify PDA ownership.
+    pub fn delegate(ctx: Context<DelegateInput>, seeds: Vec<Vec<u8>>) -> Result<()> {
+        instructions::delegate::handler(ctx, seeds)
+    }
+
+    /// Commit state and undelegate a PDA from the Ephemeral Rollup.
+    pub fn undelegate(ctx: Context<UndelegateInput>) -> Result<()> {
+        instructions::undelegate::handler(ctx)
     }
 }
