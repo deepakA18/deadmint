@@ -131,14 +131,12 @@ export function useGameState({ mode, liveConfig }: UseGameStateOptions): UseGame
   const wsRef = useRef<GameConnection | null>(null);
   const localPlayerFoundRef = useRef(false);
   const explosionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // Optimistic movement: track pending moves so WS doesn't override local position.
-  // pendingMoves counts in-flight TXs. While > 0, WS uses our optimistic x/y.
-  const optimisticRef = useRef<{ x: number; y: number; pendingMoves: number }>({
-    x: 0, y: 0, pendingMoves: 0,
-  });
   const localPlayerIndexRef = useRef(localPlayerIndex);
   localPlayerIndexRef.current = localPlayerIndex;
+
+  // Simple cooldowns to prevent spamming TXs before server confirms
+  const moveCooldownRef = useRef(false);
+  const bombCooldownRef = useRef(false);
 
   // ─── LIVE MODE: WebSocket connection ───────────────────────
 
@@ -151,32 +149,13 @@ export function useGameState({ mode, liveConfig }: UseGameStateOptions): UseGame
       : liveConfig.wallet.publicKey;
 
     const conn = connectToGame(gamePdaStr, (state) => {
-      // Preserve optimistic local player position while moves are in-flight
-      const opt = optimisticRef.current;
-      if (opt.pendingMoves > 0 && localPlayerFoundRef.current) {
-        const lpi = localPlayerIndexRef.current;
-        const serverPlayer = state.players[lpi];
-        if (serverPlayer && serverPlayer.alive) {
-          if (serverPlayer.x === opt.x && serverPlayer.y === opt.y) {
-            opt.pendingMoves = 0;
-          } else {
-            serverPlayer.x = opt.x;
-            serverPlayer.y = opt.y;
-          }
-        }
-      }
-
-      // Release bomb cooldown when server confirms bomb placement
-      if (bombCooldownRef.current && localPlayerFoundRef.current) {
-        const sp = state.players[localPlayerIndexRef.current];
-        // Server shows bomb was placed (activeBombs > 0) or grid has a new bomb
-        if (sp && sp.activeBombs > 0) {
-          bombCooldownRef.current = false;
-        }
-      }
-
+      // Server state is authoritative — just set it directly
       setGameState(state);
       setIsLoading(false);
+
+      // Release cooldowns — server has new state, player can act again
+      moveCooldownRef.current = false;
+      bombCooldownRef.current = false;
 
       // Find local player index (only search until found)
       if (!localPlayerFoundRef.current) {
@@ -189,9 +168,6 @@ export function useGameState({ mode, liveConfig }: UseGameStateOptions): UseGame
         if (idx !== -1) {
           setLocalPlayerIndex(idx);
           localPlayerFoundRef.current = true;
-          // Initialize optimistic position from first known server state
-          optimisticRef.current.x = state.players[idx].x;
-          optimisticRef.current.y = state.players[idx].y;
         }
       }
 
@@ -245,7 +221,7 @@ export function useGameState({ mode, liveConfig }: UseGameStateOptions): UseGame
     };
   }, [mode, liveConfig?.gamePda.toBase58()]);
 
-  // Shared bomb detonation scheduler (used by both live + mock modes)
+  // Shared bomb detonation scheduler (mock mode only)
   const scheduleBombDetonation = useCallback(
     (cellIdx: number, range: number, ownerIdx: number) => {
       setTimeout(() => {
@@ -284,36 +260,15 @@ export function useGameState({ mode, liveConfig }: UseGameStateOptions): UseGame
     []
   );
 
-  // Live move player (simplified — no crank, backend handles detonation)
+  // ─── LIVE: Move player (server-authoritative, no optimistic prediction) ───
+
   const liveMove = useCallback(
     (direction: number) => {
       if (!liveConfig || !gameState || gameState.config.status !== STATUS_ACTIVE) return;
       const localPlayer = gameState.players[localPlayerIndex];
       if (!localPlayer || !localPlayer.alive) return;
 
-      // Compute optimistic target
-      const [nx, ny] = getNewPos(localPlayer.x, localPlayer.y, direction);
-      const canMove =
-        nx >= 0 && nx < GRID_WIDTH && ny >= 0 && ny < GRID_HEIGHT &&
-        isWalkable(gameState.grid.cells[ny * GRID_WIDTH + nx]);
-
-      if (canMove) {
-        // Record optimistic position — WS handler preserves it until server catches up
-        optimisticRef.current.x = nx;
-        optimisticRef.current.y = ny;
-        optimisticRef.current.pendingMoves++;
-
-        // Immediately update local state
-        setGameState((prev) => {
-          if (!prev) return prev;
-          const next = deepCloneState(prev);
-          next.players[localPlayerIndex].x = nx;
-          next.players[localPlayerIndex].y = ny;
-          return next;
-        });
-      }
-
-      // Fire TX in background (fire-and-forget) — on-chain state reconciles via WS
+      // Fire TX — state updates via WS when server confirms
       const signer: gameService.Signer = liveConfig.sessionKey || liveConfig.wallet;
       const [localPlayerPda] = derivePlayerPda(liveConfig.gamePda, localPlayerIndex);
       gameService.movePlayer(
@@ -324,45 +279,25 @@ export function useGameState({ mode, liveConfig }: UseGameStateOptions): UseGame
         gameState.delegated,
       ).catch((e) => {
         console.error("Move failed:", e);
-        // TX failed — decrement pending so next WS update corrects position
-        optimisticRef.current.pendingMoves = Math.max(0, optimisticRef.current.pendingMoves - 1);
       });
     },
     [liveConfig, gameState, localPlayerIndex]
   );
 
-  // Live place bomb — lightweight optimistic prediction.
-  // Show bomb at player's current position immediately for instant feedback.
-  // Next WS update (~100-200ms) overwrites grid cells entirely (self-correcting).
-  // If bomb position was slightly off (due to optimistic move lag), it jumps to
-  // the correct cell on next WS — barely noticeable at 100-200ms poll intervals.
-  const bombCooldownRef = useRef(false);
+  // ─── LIVE: Place bomb (server-authoritative, no optimistic prediction) ───
+
   const livePlaceBomb = useCallback(() => {
     if (!liveConfig || !gameState || gameState.config.status !== STATUS_ACTIVE) return;
     const p = gameState.players[localPlayerIndex];
     if (!p || !p.alive || p.activeBombs >= p.maxBombs) return;
 
-    // Cooldown guard: prevent rapid re-triggering before server confirms
+    // Cooldown guard: prevent spamming before server confirms
     if (bombCooldownRef.current) return;
     bombCooldownRef.current = true;
+    // Safety: release after 2s if server never confirms
+    setTimeout(() => { bombCooldownRef.current = false; }, 2000);
 
-    // Release cooldown when server confirms (activeBombs changes) or after 2s safety
-    const cooldownTimeout = setTimeout(() => { bombCooldownRef.current = false; }, 2000);
-
-    // Lightweight optimistic: show bomb at player's position immediately.
-    // No cell protection — next WS update will overwrite with authoritative state.
-    const bombIdx = p.y * GRID_WIDTH + p.x;
-    setGameState((prev) => {
-      if (!prev) return prev;
-      const next = deepCloneState(prev);
-      if (next.grid.cells[bombIdx] === CELL_EMPTY) {
-        next.grid.cells[bombIdx] = CELL_BOMB;
-        next.players[localPlayerIndex].activeBombs++;
-      }
-      return next;
-    });
-
-    // Fire TX — bomb position is determined on-chain from the Player PDA's x/y
+    // Fire TX — bomb appears on next WS state update
     const signer: gameService.Signer = liveConfig.sessionKey || liveConfig.wallet;
     const [localPlayerPda] = derivePlayerPda(liveConfig.gamePda, localPlayerIndex);
     gameService.placeBomb(
@@ -370,24 +305,9 @@ export function useGameState({ mode, liveConfig }: UseGameStateOptions): UseGame
       liveConfig.gamePda,
       localPlayerPda,
       gameState.delegated,
-    ).then(() => {
-      // TX sent — WS will confirm with authoritative state
-    }).catch((e) => {
+    ).catch((e) => {
       console.error("Place bomb failed:", e);
       bombCooldownRef.current = false;
-      clearTimeout(cooldownTimeout);
-      // Revert optimistic bomb on failure
-      setGameState((prev) => {
-        if (!prev) return prev;
-        const next = deepCloneState(prev);
-        if (next.grid.cells[bombIdx] === CELL_BOMB) {
-          next.grid.cells[bombIdx] = CELL_EMPTY;
-          next.players[localPlayerIndex].activeBombs = Math.max(
-            0, next.players[localPlayerIndex].activeBombs - 1
-          );
-        }
-        return next;
-      });
     });
   }, [liveConfig, gameState, localPlayerIndex]);
 

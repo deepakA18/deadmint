@@ -5,7 +5,7 @@ import {
   Transaction,
 } from "@solana/web3.js";
 import { Program, AnchorProvider, BN } from "@coral-xyz/anchor";
-import { RPC_URL, EPHEMERAL_RPC_URL, PROGRAM_ID_STR, DELEGATION_PROGRAM_ID_STR, loadCrankKeypair } from "./config";
+import { RPC_URL, EPHEMERAL_RPC_URL, PROGRAM_ID_STR, DELEGATION_PROGRAM_ID_STR, ER_VALIDATOR_STR, loadCrankKeypair } from "./config";
 import idlJson from "./idl/deadmint.json";
 import type { Deadmint } from "./idl/deadmint";
 
@@ -13,6 +13,7 @@ import type { Deadmint } from "./idl/deadmint";
 
 export const PROGRAM_ID = new PublicKey(PROGRAM_ID_STR);
 export const DELEGATION_PROGRAM_ID = new PublicKey(DELEGATION_PROGRAM_ID_STR);
+export const ER_VALIDATOR = new PublicKey(ER_VALIDATOR_STR);
 
 // ─── Singletons ────────────────────────────────────────────
 
@@ -313,6 +314,9 @@ export async function sendDelegatePda(
         payer: crank.publicKey,
         pda: pda,
       })
+      .remainingAccounts([
+        { pubkey: ER_VALIDATOR, isSigner: false, isWritable: false },
+      ])
       .instruction();
 
     const tx = new Transaction().add(ix);
