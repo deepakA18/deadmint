@@ -2,6 +2,7 @@ import { PublicKey } from "@solana/web3.js";
 import { BN } from "@coral-xyz/anchor";
 import {
   POLL_INTERVAL_ACTIVE_MS,
+  POLL_INTERVAL_ACTIVE_ER_MS,
   POLL_INTERVAL_LOBBY_MS,
   CRANK_COOLDOWN_MS,
   DELEGATION_TIMEOUT_MS,
@@ -80,7 +81,7 @@ export class GameWorker {
   private scheduleNext() {
     if (!this.running) return;
     const interval = this._status === STATUS_ACTIVE
-      ? POLL_INTERVAL_ACTIVE_MS
+      ? (this._delegated ? POLL_INTERVAL_ACTIVE_ER_MS : POLL_INTERVAL_ACTIVE_MS)
       : POLL_INTERVAL_LOBBY_MS;
     this.timer = setTimeout(() => this.tick(), interval);
   }

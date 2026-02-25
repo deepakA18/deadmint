@@ -14,7 +14,8 @@ export const DELEGATION_PROGRAM_ID_STR = "DELeGGvXpWV2fqJUhqcF5ZSYMS4JTLjteaAMAR
 
 // ─── Timing ──────────────────────────────────────────────────
 
-export const POLL_INTERVAL_ACTIVE_MS = 800;
+export const POLL_INTERVAL_ACTIVE_MS = 200;       // base layer: poll every 200ms
+export const POLL_INTERVAL_ACTIVE_ER_MS = 100;     // ER: poll aggressively (~10ms latency)
 export const POLL_INTERVAL_LOBBY_MS = 3000;
 export const CRANK_COOLDOWN_MS = 500;
 export const GAME_CLEANUP_AFTER_MS = 120_000; // 2 min after finish
