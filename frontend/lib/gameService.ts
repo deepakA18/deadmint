@@ -659,6 +659,62 @@ export async function fetchGameStateBatched(
   }
 }
 
+// ─── Batched Game Config Fetch (single RPC call) ──────────────
+
+/**
+ * Fetch configs for multiple game PDAs in a single getMultipleAccountsInfo call.
+ * Returns a Map<pdaString, GameConfig> for all accounts that decoded successfully.
+ */
+export async function fetchGameConfigsBatched(
+  connection: Connection,
+  gamePdas: PublicKey[]
+): Promise<Map<string, GameConfig>> {
+  const result = new Map<string, GameConfig>();
+  if (gamePdas.length === 0) return result;
+
+  const program = getProgram(connection);
+
+  try {
+    const infos = await connection.getMultipleAccountsInfo(gamePdas);
+    for (let i = 0; i < gamePdas.length; i++) {
+      const info = infos[i];
+      if (!info) continue;
+      try {
+        // If account is owned by delegation program, skip (need to fetch from ER)
+        if (info.owner.equals(DELEGATION_PROGRAM_ID)) continue;
+        const game = (program as any).coder.accounts.decode("game", info.data);
+        result.set(gamePdas[i].toBase58(), anchorGameToConfig(game));
+      } catch {
+        // Decode failed — skip this game
+      }
+    }
+  } catch {
+    // RPC call failed — return empty
+  }
+
+  // For any PDAs that were delegated, try fetching from ER in a second batch
+  const delegatedPdas = gamePdas.filter(
+    (pda) => !result.has(pda.toBase58())
+  );
+  if (delegatedPdas.length > 0) {
+    try {
+      const erConn = getErConnection();
+      const erProgram = getProgram(erConn);
+      const erInfos = await erConn.getMultipleAccountsInfo(delegatedPdas);
+      for (let i = 0; i < delegatedPdas.length; i++) {
+        const info = erInfos[i];
+        if (!info) continue;
+        try {
+          const game = (erProgram as any).coder.accounts.decode("game", info.data);
+          result.set(delegatedPdas[i].toBase58(), anchorGameToConfig(game));
+        } catch {}
+      }
+    } catch {}
+  }
+
+  return result;
+}
+
 // ─── Discover Games (getProgramAccounts) ──────────────────────
 
 export async function discoverGames(

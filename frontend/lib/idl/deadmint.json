@@ -1,5 +1,5 @@
 {
-  "address": "GLnaE4KiQUGDZTtDP1YnTV4dtUbXudBk1kApueC791c",
+  "address": "8hQdUzp2UzjLRPBDMZmSisxNyy3nnccxsePQS4tsRsSZ",
   "metadata": {
     "name": "deadmint",
     "version": "0.1.0",
@@ -256,7 +256,7 @@
         },
         {
           "name": "owner_program",
-          "address": "GLnaE4KiQUGDZTtDP1YnTV4dtUbXudBk1kApueC791c"
+          "address": "8hQdUzp2UzjLRPBDMZmSisxNyy3nnccxsePQS4tsRsSZ"
         },
         {
           "name": "delegation_program",

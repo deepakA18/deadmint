@@ -11,7 +11,7 @@ import { PixelButton } from "@/components/ui/PixelButton";
 import {
   getBaseConnection,
   joinGame,
-  fetchGameConfig,
+  fetchGameConfigsBatched,
   discoverGames,
 } from "@/lib/gameService";
 import { getOrCreateSessionKey, fundSessionKey } from "@/lib/sessionKey";
@@ -65,17 +65,19 @@ export default function GamesPage() {
     const results: GameEntry[] = [];
     const seenPdas = new Set<string>();
 
-    // 1. Try backend API first (fast, no RPC load)
+    // Collect all known game PDAs from backend + localStorage, then batch-fetch configs
+    // in a single RPC call instead of N sequential calls.
+    interface PendingGame { gamePda: PublicKey; gameId: string; maxPlayers: number }
+    const pending: PendingGame[] = [];
+
+    // 1. Backend API (fast HTTP, no RPC)
     try {
       const backendGames = await fetchGamesFromBackend();
       for (const bg of backendGames) {
+        if (seenPdas.has(bg.gamePda)) continue;
         try {
-          const gamePda = new PublicKey(bg.gamePda);
-          const config = await fetchGameConfig(connection, gamePda);
-          if (config) {
-            results.push({ gamePda, gameId: bg.gameId, maxPlayers: bg.maxPlayers, config });
-            seenPdas.add(bg.gamePda);
-          }
+          pending.push({ gamePda: new PublicKey(bg.gamePda), gameId: bg.gameId, maxPlayers: bg.maxPlayers });
+          seenPdas.add(bg.gamePda);
         } catch {}
       }
     } catch {}
@@ -85,16 +87,26 @@ export default function GamesPage() {
     for (const sg of saved) {
       if (seenPdas.has(sg.gamePda)) continue;
       try {
-        const gamePda = new PublicKey(sg.gamePda);
-        const config = await fetchGameConfig(connection, gamePda);
-        if (config) {
-          results.push({ gamePda, gameId: sg.gameId, maxPlayers: sg.maxPlayers, config });
-          seenPdas.add(sg.gamePda);
-        }
+        pending.push({ gamePda: new PublicKey(sg.gamePda), gameId: sg.gameId, maxPlayers: sg.maxPlayers });
+        seenPdas.add(sg.gamePda);
       } catch {}
     }
 
-    // 3. Fallback: discover games on-chain via getProgramAccounts
+    // 3. Batch-fetch all configs in 1 RPC call (instead of N individual calls)
+    if (pending.length > 0) {
+      const configMap = await fetchGameConfigsBatched(
+        connection,
+        pending.map((p) => p.gamePda)
+      );
+      for (const pg of pending) {
+        const config = configMap.get(pg.gamePda.toBase58());
+        if (config) {
+          results.push({ gamePda: pg.gamePda, gameId: pg.gameId, maxPlayers: pg.maxPlayers, config });
+        }
+      }
+    }
+
+    // 4. Fallback: discover games on-chain via getProgramAccounts
     try {
       const discovered = await discoverGames(connection);
       for (const d of discovered) {

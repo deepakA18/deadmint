@@ -9,7 +9,7 @@ const rpcUrl = process.env.RPC_URL;
 if (!rpcUrl) throw new Error("Set RPC_URL in .env (e.g. https://devnet.helius-rpc.com/?api-key=YOUR_KEY)");
 export const RPC_URL = rpcUrl;
 export const EPHEMERAL_RPC_URL = process.env.EPHEMERAL_RPC_URL || "https://devnet-as.magicblock.app";
-export const PROGRAM_ID_STR = "GLnaE4KiQUGDZTtDP1YnTV4dtUbXudBk1kApueC791c";
+export const PROGRAM_ID_STR = "8hQdUzp2UzjLRPBDMZmSisxNyy3nnccxsePQS4tsRsSZ";
 export const DELEGATION_PROGRAM_ID_STR = "DELeGGvXpWV2fqJUhqcF5ZSYMS4JTLjteaAMARRSaeSh";
 export const ER_VALIDATOR_STR = process.env.ER_VALIDATOR || "MAS1Dt9qreoRMQ14YQuhg8UTZMMzDdKhmkZMECCzk57"; // Asia devnet ER validator
 

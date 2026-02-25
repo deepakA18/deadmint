@@ -399,7 +399,7 @@ export function useGameState({ mode, liveConfig }: UseGameStateOptions): UseGame
       } catch {
         // ER poll failed — backend WS is the fallback
       }
-      if (active) setTimeout(poll, 50);
+      if (active) setTimeout(poll, 150);
     };
 
     poll();
@@ -819,7 +819,10 @@ export function useGameState({ mode, liveConfig }: UseGameStateOptions): UseGame
     }
   }, [mode, livePlaceBomb, mockPlaceBomb]);
 
-  const isLocalPlayerDead = gameState
+  // Only report dead AFTER the local player has been positively identified.
+  // Before that, localPlayerIndex is 0 (default) and players[0] might be
+  // a fallback or another player — showing "YOU DIED" falsely.
+  const isLocalPlayerDead = (gameState && localPlayerFoundRef.current)
     ? !gameState.players[localPlayerIndex]?.alive
     : false;
 
