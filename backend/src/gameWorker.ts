@@ -1,6 +1,7 @@
 import { PublicKey } from "@solana/web3.js";
 import { BN } from "@coral-xyz/anchor";
 import {
+  SIM_TICK_MS,
   POLL_INTERVAL_ACTIVE_MS,
   POLL_INTERVAL_ACTIVE_ER_MS,
   POLL_INTERVAL_LOBBY_MS,
@@ -38,7 +39,9 @@ export class GameWorker {
   readonly gameId: BN;
   readonly maxPlayers: number;
 
-  private timer: ReturnType<typeof setTimeout> | null = null;
+  private _simTimer: ReturnType<typeof setInterval> | null = null;   // Loop A handle
+  private _rpcTimer: ReturnType<typeof setTimeout> | null = null;    // Loop B handle
+  private _cachedState: FetchedGameState | null = null;              // last successful RPC result
   private running = false;
   private lastCrankTime = 0;
   private checkGameEndSent = false;
@@ -71,45 +74,72 @@ export class GameWorker {
     if (this.running) return;
     this.running = true;
     console.log(`[GameWorker] Started for game ${this.gamePdaStr.slice(0, 8)}...`);
-    this.scheduleNext();
+    // Loop A: fixed-cadence simulation tick (synchronous, never blocks on RPC)
+    this._simTimer = setInterval(() => this.simTick(), SIM_TICK_MS);
+    // Loop B: RPC/chain loop (async, self-scheduling, can stall)
+    this.scheduleRpcLoop();
   }
 
   stop() {
     this.running = false;
-    if (this.timer) {
-      clearTimeout(this.timer);
-      this.timer = null;
-    }
+    if (this._simTimer) { clearInterval(this._simTimer); this._simTimer = null; }
+    if (this._rpcTimer) { clearTimeout(this._rpcTimer); this._rpcTimer = null; }
     console.log(`[GameWorker] Stopped for game ${this.gamePdaStr.slice(0, 8)}...`);
   }
 
-  private scheduleNext() {
+  // ─── Loop A: Simulation Tick ────────────────────────────────
+
+  /**
+   * Runs on setInterval(SIM_TICK_MS). Purely synchronous.
+   * Advances _currentTick, builds wire state, broadcasts.
+   * NEVER makes RPC calls. NEVER awaits anything.
+   * Keeps running even when RPC is stalled/down (uses cached state).
+   */
+  private simTick() {
     if (!this.running) return;
-    const interval = this._status === STATUS_ACTIVE
-      ? (this._delegated ? POLL_INTERVAL_ACTIVE_ER_MS : POLL_INTERVAL_ACTIVE_MS)
-      : POLL_INTERVAL_LOBBY_MS;
-    this.timer = setTimeout(() => this.tick(), interval);
+    if (this._status !== STATUS_ACTIVE) return;   // only tick during active games
+    if (!this._cachedState) return;                // no chain state yet (startup only)
+
+    this._currentTick += 1;
+
+    const wire = toWireState(
+      this._cachedState, this._delegated,
+      this._currentTick, this._bombTickMap, this._explosionExpiry,
+    );
+    this._lastWireState = wire;
+    broadcastToGame(this.gamePdaStr, { type: "state", data: wire });
   }
 
-  private async tick() {
+  // ─── Loop B: RPC/Chain Loop ─────────────────────────────────
+
+  private scheduleRpcLoop() {
+    if (!this.running) return;
+    const ms = this._status === STATUS_ACTIVE
+      ? (this._delegated ? POLL_INTERVAL_ACTIVE_ER_MS : POLL_INTERVAL_ACTIVE_MS)
+      : POLL_INTERVAL_LOBBY_MS;
+    this._rpcTimer = setTimeout(() => this.rpcTick(), ms);
+  }
+
+  /**
+   * Fetches chain state, sends crank TXs, handles delegation transitions.
+   * Can stall, retry, fail — sim loop keeps ticking independently.
+   * For non-ACTIVE states (lobby/finished), also broadcasts (sim loop is idle).
+   */
+  private async rpcTick() {
     if (!this.running) return;
 
     try {
-      // Fetch from ER when delegated, otherwise from base layer
       const state = await fetchFullGameState(this.gamePda, this.maxPlayers, this._delegated);
       if (!state) {
-        this.scheduleNext();
+        this.scheduleRpcLoop();
         return;
       }
 
+      // Update cached state — sim loop picks this up on next simTick()
+      this._cachedState = state;
+
       const prevStatus = this._status;
       this._status = state.game.status;
-
-      // Advance simulation tick — this is the ONLY place currentTick changes.
-      // It is NOT derived from Date.now() or any wall-clock source.
-      if (state.game.status === STATUS_ACTIVE) {
-        this._currentTick += 1;
-      }
 
       // Trigger delegation when game transitions to ACTIVE
       if (prevStatus !== STATUS_ACTIVE && state.game.status === STATUS_ACTIVE && !this._delegated && !this._delegating) {
@@ -121,7 +151,7 @@ export class GameWorker {
         this.triggerUndelegation();
       }
 
-      // Crank bombs if active
+      // Active-only: crank TXs + bomb detonation tracking
       if (state.game.status === STATUS_ACTIVE) {
         await this.crankBombs(state);
         await this.crankGameEnd(state);
@@ -132,7 +162,6 @@ export class GameWorker {
           if (!bomb) continue;
           const bombKey = `${i}:${bomb.placedAtSlot.toString()}`;
           if (bomb.detonated && this._bombTickMap.has(bombKey)) {
-            // Bomb just detonated — mark explosion cells with expiry ticks
             for (let c = 0; c < state.game.cells.length; c++) {
               if (state.game.cells[c] === 4 /* CELL_EXPLOSION */ && !this._explosionExpiry.has(c)) {
                 this._explosionExpiry.set(c, this._currentTick + EXPLOSION_TICKS);
@@ -143,18 +172,20 @@ export class GameWorker {
         }
       }
 
-      // Convert to wire format and broadcast
-      const wire = toWireState(
-        state, this._delegated,
-        this._currentTick, this._bombTickMap, this._explosionExpiry
-      );
-      this._lastWireState = wire;
-      broadcastToGame(this.gamePdaStr, { type: "state", data: wire });
+      // Non-ACTIVE broadcast (sim loop is idle during lobby/finished)
+      if (state.game.status !== STATUS_ACTIVE) {
+        const wire = toWireState(
+          state, this._delegated,
+          this._currentTick, this._bombTickMap, this._explosionExpiry,
+        );
+        this._lastWireState = wire;
+        broadcastToGame(this.gamePdaStr, { type: "state", data: wire });
+      }
     } catch (e) {
-      console.error(`[GameWorker] tick error for ${this.gamePdaStr.slice(0, 8)}:`, e);
+      console.error(`[GameWorker] rpcTick error for ${this.gamePdaStr.slice(0, 8)}:`, e);
     }
 
-    this.scheduleNext();
+    this.scheduleRpcLoop();
   }
 
   private async crankBombs(state: FetchedGameState) {

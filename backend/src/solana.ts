@@ -288,10 +288,15 @@ export async function sendCheckGameEnd(
  * Checks if a PDA is currently delegated (owned by the delegation program on base layer).
  */
 export async function isDelegated(pda: PublicKey): Promise<boolean> {
-  const conn = getConnection();
-  const info = await conn.getAccountInfo(pda);
-  if (!info) return false;
-  return info.owner.equals(DELEGATION_PROGRAM_ID);
+  try {
+    const conn = getConnection();
+    const info = await conn.getAccountInfo(pda);
+    if (!info) return false;
+    return info.owner.equals(DELEGATION_PROGRAM_ID);
+  } catch {
+    // On RPC error (429, 502, etc.) return false so callers keep retrying
+    return false;
+  }
 }
 
 /**

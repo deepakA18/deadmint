@@ -15,9 +15,10 @@ export const ER_VALIDATOR_STR = process.env.ER_VALIDATOR || "MAS1Dt9qreoRMQ14YQu
 
 // ─── Timing ──────────────────────────────────────────────────
 
-export const POLL_INTERVAL_ACTIVE_MS = 200;       // base layer: poll every 200ms
+export const POLL_INTERVAL_ACTIVE_MS = 500;       // base layer: poll every 500ms (Helius free tier rate limit)
 export const POLL_INTERVAL_ACTIVE_ER_MS = 100;     // ER: poll aggressively (~10ms latency)
 export const POLL_INTERVAL_LOBBY_MS = 3000;
+export const SIM_TICK_MS = 100;                    // simulation tick cadence (must match frontend)
 export const CRANK_COOLDOWN_MS = 500;
 export const GAME_CLEANUP_AFTER_MS = 120_000; // 2 min after finish
 export const DELEGATION_TIMEOUT_MS = 10_000; // max wait for delegation confirmation
