@@ -52,7 +52,7 @@ pub fn handler(ctx: Context<PlaceBomb>) -> Result<()> {
         x: player.x,
         y: player.y,
         range: player.bomb_range,
-        fuse_slots: 12, // ~5 seconds at ~400ms slots
+        fuse_slots: 8, // ~3 seconds at ~400ms slots
         placed_at_slot: clock.slot,
         detonated: false,
     };

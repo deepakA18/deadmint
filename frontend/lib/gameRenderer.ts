@@ -152,6 +152,9 @@ let particles: Particle[] = [];
 
 // Previous explosion cells for detecting new explosions
 let prevExplosionCells: Set<number> = new Set();
+// Track when each cell first became an explosion (for visual timeout in live mode)
+const explosionTimestamps: Map<number, number> = new Map();
+const EXPLOSION_VISUAL_MS = 600; // hide explosion tiles after this many ms
 
 // ─── Visual Lerp State (render-only, doesn't affect simulation) ──
 // Players snap between tiles in simulation but lerp visually for smoothness.
@@ -164,7 +167,7 @@ interface VisualPlayer {
 }
 
 let visualPlayers: VisualPlayer[] = [];
-const LOCAL_LERP_SPEED = 0.35;   // fast — local player input feels snappy
+const LOCAL_LERP_SPEED = 0.35;   // local player movement interpolation
 const REMOTE_LERP_SPEED = 0.22;  // slightly slower — hides network jitter
 
 function updateVisualPositions(
@@ -751,7 +754,8 @@ export function renderFrame(
 ) {
   initTileCache();
 
-  // Detect new explosions for particles & screen shake
+  // Detect new explosions for particles & screen shake, track timestamps
+  const now = Date.now();
   const currentExplosions = new Set<number>();
   state.grid.cells.forEach((cell, idx) => {
     if (cell === CELL_EXPLOSION) currentExplosions.add(idx);
@@ -762,8 +766,13 @@ export function renderFrame(
       const cy = Math.floor(idx / GRID_WIDTH);
       spawnExplosionParticles(cx, cy);
       shakeFrames = 6;
+      explosionTimestamps.set(idx, now);
     }
   });
+  // Clean up timestamps for cells no longer exploding on-chain
+  for (const idx of explosionTimestamps.keys()) {
+    if (!currentExplosions.has(idx)) explosionTimestamps.delete(idx);
+  }
   prevExplosionCells = currentExplosions;
 
   // Update screen shake
@@ -806,9 +815,16 @@ export function renderFrame(
         case CELL_BOMB:
           tile = tileCache.get(`bomb_${f}`);
           break;
-        case CELL_EXPLOSION:
-          tile = tileCache.get(`explosion_${f}`);
+        case CELL_EXPLOSION: {
+          // Hide explosion tiles after visual timeout (on-chain clears lazily)
+          const firstSeen = explosionTimestamps.get(idx);
+          if (firstSeen && now - firstSeen > EXPLOSION_VISUAL_MS) {
+            tile = tileCache.get(`floor_${x}_${y}`);
+          } else {
+            tile = tileCache.get(`explosion_${f}`);
+          }
           break;
+        }
         case CELL_LOOT:
           tile = tileCache.get(`loot_${f}`);
           break;

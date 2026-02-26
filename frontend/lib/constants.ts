@@ -10,7 +10,7 @@ export const EPHEMERAL_WS_URL =
 
 // --- Program ID (single Anchor program) ---
 export const PROGRAM_ID = new PublicKey(
-  "8hQdUzp2UzjLRPBDMZmSisxNyy3nnccxsePQS4tsRsSZ"
+  "Hx7eQa2NhDDKiBThKyo4VNLnBi7pApQX9JZTsA5xBbdb"
 );
 
 // --- MagicBlock Delegation Program ---

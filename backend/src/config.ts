@@ -9,19 +9,19 @@ const rpcUrl = process.env.RPC_URL;
 if (!rpcUrl) throw new Error("Set RPC_URL in .env (e.g. https://devnet.helius-rpc.com/?api-key=YOUR_KEY)");
 export const RPC_URL = rpcUrl;
 export const EPHEMERAL_RPC_URL = process.env.EPHEMERAL_RPC_URL || "https://devnet-as.magicblock.app";
-export const PROGRAM_ID_STR = "8hQdUzp2UzjLRPBDMZmSisxNyy3nnccxsePQS4tsRsSZ";
+export const PROGRAM_ID_STR = "Hx7eQa2NhDDKiBThKyo4VNLnBi7pApQX9JZTsA5xBbdb";
 export const DELEGATION_PROGRAM_ID_STR = "DELeGGvXpWV2fqJUhqcF5ZSYMS4JTLjteaAMARRSaeSh";
 export const ER_VALIDATOR_STR = process.env.ER_VALIDATOR || "MAS1Dt9qreoRMQ14YQuhg8UTZMMzDdKhmkZMECCzk57"; // Asia devnet ER validator
 
 // ─── Timing ──────────────────────────────────────────────────
 
-export const POLL_INTERVAL_ACTIVE_MS = 500;       // base layer: poll every 500ms (Helius free tier rate limit)
-export const POLL_INTERVAL_ACTIVE_ER_MS = 100;     // ER: poll aggressively (~10ms latency)
-export const POLL_INTERVAL_LOBBY_MS = 3000;
-export const SIM_TICK_MS = 100;                    // simulation tick cadence (must match frontend)
+export const POLL_INTERVAL_ACTIVE_MS = 2000;       // base layer: brief pre-delegation window, just detect delegation
+export const POLL_INTERVAL_ACTIVE_ER_MS = 500;     // ER: crank-only polling (players subscribe directly)
+export const POLL_INTERVAL_LOBBY_MS = 30_000;      // lobby: only need to detect lobby→active transition
 export const CRANK_COOLDOWN_MS = 500;
 export const GAME_CLEANUP_AFTER_MS = 120_000; // 2 min after finish
-export const DELEGATION_TIMEOUT_MS = 10_000; // max wait for delegation confirmation
+export const DELEGATION_TIMEOUT_MS = 15_000; // max wait for delegation confirmation
+export const DELEGATION_CHECK_INTERVAL_MS = 2000; // how often to check isDelegated during delegation
 
 // ─── On-chain constants (mirrored from state.rs) ────────────
 
@@ -31,11 +31,6 @@ export const STATUS_LOBBY = 0;
 export const STATUS_ACTIVE = 1;
 export const STATUS_FINISHED = 2;
 export const STATUS_CLAIMED = 3;
-
-// ─── Simulation tick constants ──────────────────────────────
-
-export const FUSE_TICKS = 30;          // bomb fuse: 30 simulation steps
-export const EXPLOSION_TICKS = 15;     // explosion visual: 15 simulation steps
 
 // ─── Crank Keypair ───────────────────────────────────────────
 

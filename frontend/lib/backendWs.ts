@@ -45,14 +45,11 @@ interface WireGameState {
     placedAtSlot: string;
     active: boolean;
     detonated: boolean;
-    placedTick: number;
-    explodeTick: number;
     originalIndex: number;
   }[];
   currentSlot: number;
   timestamp: number;
   delegated: boolean;
-  currentTick: number;
 }
 
 type ServerMessage =
@@ -117,8 +114,6 @@ function wireToFullState(wire: WireGameState): FullGameState {
     fuseSlots: b.fuseSlots,
     placedAtSlot: new BN(b.placedAtSlot),
     detonated: b.detonated,
-    placedTick: b.placedTick,
-    explodeTick: b.explodeTick,
     originalIndex: b.originalIndex,
   }));
 
@@ -126,7 +121,6 @@ function wireToFullState(wire: WireGameState): FullGameState {
     config, grid, players, bombs,
     delegated: wire.delegated ?? false,
     currentSlot: wire.currentSlot,
-    currentTick: wire.currentTick,
   };
 }
 

@@ -6,6 +6,7 @@ import {
 } from "next/font/google";
 import { WalletProvider } from "@/providers/WalletProvider";
 import { ThemeProvider } from "@/providers/ThemeProvider";
+import { Toaster } from "sonner";
 import "./globals.css";
 
 const unifraktur = UnifrakturMaguntia({
@@ -49,7 +50,23 @@ export default function RootLayout({
         className={`${unifraktur.variable} ${medievalSharp.variable} ${pressStart.variable} bg-background text-foreground antialiased`}
       >
         <WalletProvider>
-          <ThemeProvider>{children}</ThemeProvider>
+          <ThemeProvider>
+            {children}
+            <Toaster
+              position="bottom-right"
+              theme="dark"
+              toastOptions={{
+                style: {
+                  fontFamily: "var(--font-press-start)",
+                  fontSize: "10px",
+                  background: "#1a1a2e",
+                  border: "2px solid #7c3aed",
+                  color: "#ededed",
+                },
+              }}
+              visibleToasts={6}
+            />
+          </ThemeProvider>
         </WalletProvider>
       </body>
     </html>

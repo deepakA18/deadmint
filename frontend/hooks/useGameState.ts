@@ -27,65 +27,25 @@ import type {
   GameConfig,
   GridState,
   PlayerState,
+  BombState,
 } from "@/lib/types";
 import * as gameService from "@/lib/gameService";
 import { derivePlayerPda } from "@/lib/gameService";
-import { connectToGame, type GameConnection } from "@/lib/backendWs";
+import { toast } from "sonner";
 
-const FUSE_TICKS = 30; // must match backend — bomb fuse in simulation steps
+// ─── TX Hash Toast ───────────────────────────────────────
 
-// ─── Nonce-Based Input Buffer for Client-Side Prediction ──
-// Each input is tagged with the expected server nonce AFTER the server
-// processes it.  Reconciliation uses `server.player.inputNonce` (an
-// authoritative counter that increments on every successful move_player
-// or place_bomb on-chain) instead of fragile position matching.
-//
-// Invariant: inputs are ordered by expectedNonce (ascending).
-
-interface InputFrame {
-  /** Local sequence id — used only for removeBySeq on TX failure. */
-  seq: number;
-  type: "move" | "bomb";
-  direction?: number;
-  /** The server inputNonce value we expect AFTER this input is confirmed. */
-  expectedNonce: number;
-}
-
-class InputBuffer {
-  private frames: InputFrame[] = [];
-  private nextSeq = 0;
-
-  /** Record a new input.  `baseNonce` = current local nonce before this input. */
-  push(type: "move" | "bomb", direction: number | undefined, baseNonce: number): number {
-    const seq = this.nextSeq++;
-    this.frames.push({ seq, type, direction, expectedNonce: baseNonce + 1 });
-    return seq;
-  }
-
-  /**
-   * Acknowledge all inputs confirmed by the server.
-   * Inputs whose expectedNonce ≤ serverNonce have been processed.
-   */
-  acknowledge(serverNonce: number): void {
-    this.frames = this.frames.filter((f) => f.expectedNonce > serverNonce);
-  }
-
-  /** Remove a single input by local seq (called when its TX fails). */
-  removeBySeq(seq: number): void {
-    this.frames = this.frames.filter((f) => f.seq !== seq);
-  }
-
-  getUnconfirmed(): InputFrame[] {
-    return [...this.frames];
-  }
-
-  clear(): void {
-    this.frames = [];
-  }
-
-  get length(): number {
-    return this.frames.length;
-  }
+function showTxToast(action: string, sig: string) {
+  const short = `${sig.slice(0, 8)}...${sig.slice(-4)}`;
+  const url = `https://explorer.solana.com/tx/${sig}?cluster=devnet`;
+  toast(action, {
+    description: short,
+    action: {
+      label: "View TX",
+      onClick: () => window.open(url, "_blank"),
+    },
+    duration: 4000,
+  });
 }
 
 // ─── Types ────────────────────────────────────────────────
@@ -178,115 +138,6 @@ function isWalkable(cell: number): boolean {
   );
 }
 
-// ─── Deterministic Input Replay ──────────────────────────
-// Applies a single unconfirmed input to a state clone.
-// Must mirror on-chain move_player / place_bomb logic exactly.
-// Replay is idempotent: bomb placement checks for existing CELL_BOMB.
-
-function replayInput(
-  state: FullGameState,
-  playerIndex: number,
-  input: InputFrame
-): boolean {
-  // Advance simulation tick for each replayed input step
-  if (state.currentTick != null) {
-    state.currentTick += 1;
-  }
-
-  const p = state.players[playerIndex];
-  if (!p || !p.alive) return false;
-
-  if (input.type === "move" && input.direction != null) {
-    const [nx, ny] = getNewPos(p.x, p.y, input.direction);
-    if (nx < 0 || nx >= GRID_WIDTH || ny < 0 || ny >= GRID_HEIGHT) return false;
-    const cellIdx = ny * GRID_WIDTH + nx;
-    const targetCell = state.grid.cells[cellIdx];
-    if (!isWalkable(targetCell)) return false;
-
-    p.x = nx;
-    p.y = ny;
-
-    if (targetCell === CELL_LOOT) {
-      state.grid.cells[cellIdx] = CELL_EMPTY;
-    } else if (targetCell === CELL_POWERUP) {
-      applyPowerup(p, state.grid.powerupTypes[cellIdx]);
-      state.grid.cells[cellIdx] = CELL_EMPTY;
-      state.grid.powerupTypes[cellIdx] = 0;
-    }
-    return true;
-  }
-
-  if (input.type === "bomb") {
-    if (p.activeBombs >= p.maxBombs) return false;
-    const cellIdx = p.y * GRID_WIDTH + p.x;
-    // Idempotent: if cell already has a bomb (from server or prior replay), skip
-    if (state.grid.cells[cellIdx] === CELL_BOMB) return true;
-    if (state.grid.cells[cellIdx] !== CELL_EMPTY &&
-        state.grid.cells[cellIdx] !== CELL_LOOT &&
-        state.grid.cells[cellIdx] !== CELL_POWERUP) return false;
-    state.grid.cells[cellIdx] = CELL_BOMB;
-    p.activeBombs++;
-    // Attach tick data for optimistic bomb so detonation can be simulated
-    if (state.currentTick != null) {
-      state.bombs.push({
-        owner: p.authority,
-        x: p.x,
-        y: p.y,
-        range: p.bombRange,
-        fuseSlots: 12,
-        placedAtSlot: new BN(0),
-        detonated: false,
-        placedTick: state.currentTick,
-        explodeTick: state.currentTick + FUSE_TICKS,
-      });
-    }
-    return true;
-  }
-
-  return false;
-}
-
-/**
- * Nonce-based reconciliation.
- * 1. Use server.player.inputNonce to acknowledge confirmed inputs.
- * 2. Replay remaining unconfirmed inputs on a clone of server state.
- * No position matching. No Date.now(). Fully deterministic.
- */
-function reconcileWithNonce(
-  serverState: FullGameState,
-  localPlayerIndex: number,
-  inputBuffer: InputBuffer
-): FullGameState {
-  const serverPlayer = serverState.players[localPlayerIndex];
-  if (!serverPlayer || !serverPlayer.alive) {
-    inputBuffer.clear();
-    return serverState;
-  }
-
-  // Acknowledge all inputs the server has confirmed
-  inputBuffer.acknowledge(serverPlayer.inputNonce);
-
-  const unconfirmed = inputBuffer.getUnconfirmed();
-  if (unconfirmed.length === 0) {
-    return serverState;
-  }
-
-  // Replay unconfirmed inputs on top of authoritative server state
-  const reconciled = deepCloneState(serverState);
-  for (const frame of unconfirmed) {
-    const ok = replayInput(reconciled, localPlayerIndex, frame);
-    if (!ok) break; // Input can't apply — stop; TX failure handler will clean up
-  }
-
-  // After replaying all inputs (which advanced currentTick per step),
-  // simulate any bombs whose explodeTick has been reached.
-  if (reconciled.currentTick != null) {
-    simulateExpiredBombs(reconciled);
-  }
-
-  return reconciled;
-}
-
 // ─── Hook ─────────────────────────────────────────────────
 
 export function useGameState({ mode, liveConfig }: UseGameStateOptions): UseGameStateReturn {
@@ -294,37 +145,94 @@ export function useGameState({ mode, liveConfig }: UseGameStateOptions): UseGame
   const [isLoading, setIsLoading] = useState(true);
   const [localPlayerIndex, setLocalPlayerIndex] = useState(0);
   const aiTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const wsRef = useRef<GameConnection | null>(null);
   const localPlayerFoundRef = useRef(false);
   const localPlayerIndexRef = useRef(localPlayerIndex);
   localPlayerIndexRef.current = localPlayerIndex;
 
-  // Bomb cooldown to prevent spamming before server confirms
+  // Bomb cooldown to prevent spamming before ER confirms
   const bombCooldownRef = useRef(false);
   // Move cooldown for non-delegated mode (prevents 429 rate-limit on base layer RPC)
   const moveCooldownRef = useRef(false);
 
-  // Input buffer: tracks unconfirmed inputs for replay-based reconciliation.
-  // Replaces the old position-preservation hack that caused rubber-banding.
-  const inputBufferRef = useRef(new InputBuffer());
+  // Separate state for frontend-detected delegation — keeps gameState pure.
+  // When true, ER polling activates even if gameState.delegated is still false.
+  const [delegatedOverride, setDelegatedOverride] = useState(false);
 
-  // Track delegation status in a ref so the WS callback closure can read it.
-  const isDelegatedRef = useRef(false);
+  // ─── isDelegated (derived state) ──────────────────────────
+  const isDelegated = (gameState?.delegated ?? false) || delegatedOverride;
 
-  // ─── LIVE MODE: WebSocket connection ───────────────────────
+  // ─── LIVE MODE: Direct account subscriptions (inline decode) ──
+  // Subscribe to game + player PDAs via onAccountChange.
+  // Decode the pushed data inline — zero HTTP RPC calls on the hot path.
+  // Compose FullGameState from cached authoritative data on each update.
+  // No backend relay in the player render path.
 
   useEffect(() => {
     if (mode !== "live" || !liveConfig) return;
 
-    const gamePdaStr = liveConfig.gamePda.toBase58();
+    // Capture connection for this effect instance (changes on delegation transition)
+    const conn = isDelegated
+      ? gameService.getErConnection()
+      : gameService.getBaseConnection();
+    const delegated = isDelegated;
+    const gamePda = liveConfig.gamePda;
+    const maxPlayers = liveConfig.maxPlayers;
     const matchPubkey = liveConfig.sessionKey
       ? liveConfig.sessionKey.publicKey
       : liveConfig.wallet.publicKey;
 
-    const conn = connectToGame(gamePdaStr, (state) => {
-      // Find local player index
+    let active = true;
+    const subscriptionIds: number[] = [];
+    let lastSubTime = Date.now();
+
+    // ── Cached authoritative data from ER subscription pushes ──
+    // Every piece comes from ER via onAccountChange. Nothing is invented.
+    let cachedGameConfig: GameConfig | null = null;
+    let cachedGrid: GridState | null = null;
+    let cachedBombs: BombState[] = [];
+    const cachedPlayers: PlayerState[] = [];
+    for (let i = 0; i < maxPlayers; i++) {
+      cachedPlayers.push(gameService.emptyPlayer(i));
+    }
+
+    // Track when each cell first became CELL_EXPLOSION (for stale cleanup).
+    // On-chain program clears explosions lazily; we clear them client-side
+    // so both rendering and walkability checks use consistent data.
+    const explosionFirstSeen = new Map<number, number>();
+    const EXPLOSION_VISUAL_MS = 600;
+
+    // Compose FullGameState from cached data and push to React state.
+    // Every field is from the latest ER push — this is assembly, not merging.
+    const composeAndSetState = () => {
+      if (!active || !cachedGameConfig || !cachedGrid) return;
+
+      // Post-process grid: clear stale explosion cells that the on-chain
+      // program would have cleared lazily on the next instruction.
+      const now = Date.now();
+      const cleanedCells = [...cachedGrid.cells];
+      for (let i = 0; i < cleanedCells.length; i++) {
+        if (cleanedCells[i] === CELL_EXPLOSION) {
+          if (!explosionFirstSeen.has(i)) {
+            explosionFirstSeen.set(i, now);
+          } else if (now - explosionFirstSeen.get(i)! > EXPLOSION_VISUAL_MS) {
+            cleanedCells[i] = CELL_EMPTY;
+          }
+        } else {
+          explosionFirstSeen.delete(i);
+        }
+      }
+
+      const fullState: FullGameState = {
+        config: cachedGameConfig,
+        grid: { cells: cleanedCells, powerupTypes: cachedGrid.powerupTypes },
+        players: [...cachedPlayers],
+        bombs: cachedBombs,
+        delegated,
+      };
+
+      // Find local player index (one-time)
       if (!localPlayerFoundRef.current) {
-        const idx = state.players.findIndex(
+        const idx = fullState.players.findIndex(
           (p) =>
             p.authority &&
             matchPubkey &&
@@ -336,112 +244,124 @@ export function useGameState({ mode, liveConfig }: UseGameStateOptions): UseGame
         }
       }
 
-      // When delegated, ER polling is authoritative — skip WS for gameplay state
-      if (isDelegatedRef.current) return;
-
-      // Reconcile server state with unconfirmed local inputs via nonce
-      const reconciled = reconcileWithNonce(
-        state, localPlayerIndexRef.current, inputBufferRef.current
-      );
-      setGameState(reconciled);
+      setGameState(fullState);
       setIsLoading(false);
       bombCooldownRef.current = false;
-    });
-
-    wsRef.current = conn;
-
-    // Fallback: fetch initial state via RPC if WS takes too long
-    const fallbackTimer = setTimeout(async () => {
-      try {
-        const connection = gameService.getBaseConnection();
-        const state = await gameService.fetchFullGameState(
-          connection,
-          liveConfig.gamePda,
-          liveConfig.maxPlayers
-        );
-        if (state) {
-          setGameState(state);
-          setIsLoading(false);
-        }
-      } catch {}
-    }, 3000);
-
-    return () => {
-      clearTimeout(fallbackTimer);
-      conn.close();
-      wsRef.current = null;
-      localPlayerFoundRef.current = false;
     };
-  }, [mode, liveConfig?.gamePda.toBase58()]);
 
-  // ─── LIVE MODE: Direct ER polling (bypasses backend round-trip) ──
-  // When delegated, poll the ER directly for low-latency state updates.
-  // The backend WS still runs for cranking and as a fallback.
+    // ── Subscription callbacks: decode inline, compose, push ──
 
-  const isDelegated = gameState?.delegated ?? false;
-  isDelegatedRef.current = isDelegated;
+    // Game PDA: contains config, grid, bombs
+    const onGameChange = (accountInfo: { data: Buffer }) => {
+      if (!active) return;
+      const decoded = gameService.decodeGameAccount(accountInfo.data);
+      if (!decoded) return;
+      cachedGameConfig = decoded.config;
+      cachedGrid = decoded.grid;
+      cachedBombs = decoded.bombs;
+      lastSubTime = Date.now();
+      composeAndSetState();
+    };
 
-  useEffect(() => {
-    if (mode !== "live" || !liveConfig || !isDelegated) return;
-    if (gameState && gameState.config.status !== STATUS_ACTIVE) return;
+    // Player PDAs: contain position, alive, stats
+    const makePlayerHandler = (index: number) => {
+      return (accountInfo: { data: Buffer }) => {
+        if (!active) return;
+        const decoded = gameService.decodePlayerAccount(accountInfo.data);
+        if (decoded) {
+          cachedPlayers[index] = decoded;
+        }
+        lastSubTime = Date.now();
+        composeAndSetState();
+      };
+    };
 
-    let active = true;
-    const erConn = gameService.getErConnection();
-    const matchPubkey = liveConfig.sessionKey
-      ? liveConfig.sessionKey.publicKey
-      : liveConfig.wallet.publicKey;
+    // ── Set up subscriptions ──
 
-    const poll = async () => {
+    try {
+      subscriptionIds.push(
+        conn.onAccountChange(gamePda, onGameChange, { commitment: "confirmed" })
+      );
+    } catch (e) {
+      console.warn("[Sub] Failed to subscribe to game PDA:", e);
+    }
+
+    for (let i = 0; i < maxPlayers; i++) {
+      try {
+        const [playerPda] = gameService.derivePlayerPda(gamePda, i);
+        subscriptionIds.push(
+          conn.onAccountChange(playerPda, makePlayerHandler(i), { commitment: "confirmed" })
+        );
+      } catch (e) {
+        console.warn(`[Sub] Failed to subscribe to player ${i} PDA:`, e);
+      }
+    }
+
+    // ── Initial fetch (one-time, populates cache before first subscription) ──
+    const doInitialFetch = async () => {
       if (!active) return;
       try {
         const serverState = await gameService.fetchGameStateBatched(
-          erConn,
-          liveConfig.gamePda,
-          liveConfig.maxPlayers,
-          true
+          conn, gamePda, maxPlayers, delegated
         );
         if (serverState && active) {
-          // Find local player index
-          if (!localPlayerFoundRef.current) {
-            const idx = serverState.players.findIndex(
-              (p) =>
-                p.authority &&
-                matchPubkey &&
-                p.authority.toBase58() === matchPubkey.toBase58()
-            );
-            if (idx !== -1) {
-              setLocalPlayerIndex(idx);
-              localPlayerFoundRef.current = true;
-            }
+          cachedGameConfig = serverState.config;
+          cachedGrid = serverState.grid;
+          cachedBombs = serverState.bombs;
+          for (let i = 0; i < maxPlayers; i++) {
+            cachedPlayers[i] = serverState.players[i] || gameService.emptyPlayer(i);
           }
+          lastSubTime = Date.now();
+          composeAndSetState();
+        }
+      } catch (e) {
+        console.error("[Sub] Initial fetch failed:", e);
+      }
+    };
+    doInitialFetch();
 
-          // Reconcile: replay unconfirmed inputs on server state
-          const reconciled = reconcileWithNonce(
-            serverState, localPlayerIndexRef.current, inputBufferRef.current
-          );
-          setGameState(reconciled);
-          setIsLoading(false);
-          bombCooldownRef.current = false;
+    // ── Safety net: if subscriptions go quiet for 3s, do one reconciliation fetch ──
+    const safetyPoll = setInterval(async () => {
+      if (!active) return;
+      if (Date.now() - lastSubTime < 3000) return;
+      try {
+        const serverState = await gameService.fetchGameStateBatched(
+          conn, gamePda, maxPlayers, delegated
+        );
+        if (serverState && active) {
+          cachedGameConfig = serverState.config;
+          cachedGrid = serverState.grid;
+          cachedBombs = serverState.bombs;
+          for (let i = 0; i < maxPlayers; i++) {
+            cachedPlayers[i] = serverState.players[i] || gameService.emptyPlayer(i);
+          }
+          lastSubTime = Date.now();
+          composeAndSetState();
         }
       } catch {
-        // ER poll failed — backend WS is the fallback
+        // Safety poll failure — subscriptions should still be active
       }
-      if (active) setTimeout(poll, 150);
-    };
+    }, 3000);
 
-    poll();
-    return () => { active = false; };
-  }, [mode, liveConfig?.gamePda.toBase58(), isDelegated, gameState?.config.status]);
+    return () => {
+      active = false;
+      clearInterval(safetyPoll);
+      for (const id of subscriptionIds) {
+        try { conn.removeAccountChangeListener(id); } catch {}
+      }
+      localPlayerFoundRef.current = false;
+    };
+  }, [mode, liveConfig?.gamePda.toBase58(), isDelegated]);
 
   // ─── LIVE MODE: Frontend delegation detection ──────────────
-  // Don't rely solely on backend WS for delegated flag.
-  // Independently check if the game PDA is owned by the delegation program.
-  // This activates ER routing even if backend WS never broadcasts delegated=true.
+  // Check if the game PDA is owned by the delegation program.
+  // When detected, sets delegatedOverride → isDelegated becomes true →
+  // subscription effect re-runs and switches to ER connection.
 
   useEffect(() => {
     if (mode !== "live" || !liveConfig) return;
     if (!gameState || gameState.config.status !== STATUS_ACTIVE) return;
-    if (gameState.delegated) return; // Already delegated
+    if (isDelegated) return; // Already delegated (from gameState or override ref)
 
     let active = true;
     const check = async () => {
@@ -450,7 +370,9 @@ export function useGameState({ mode, liveConfig }: UseGameStateOptions): UseGame
         const delegated = await gameService.isDelegatedOnChain(liveConfig.gamePda);
         if (delegated && active) {
           console.log("[Delegation] Detected on-chain — switching to ER");
-          setGameState((prev) => prev ? { ...prev, delegated: true } : prev);
+          // Set override state — does NOT merge into gameState.
+          // Triggers re-render so subscription effect switches to ER connection.
+          setDelegatedOverride(true);
           return; // Stop checking
         }
       } catch {}
@@ -458,87 +380,7 @@ export function useGameState({ mode, liveConfig }: UseGameStateOptions): UseGame
     };
     check();
     return () => { active = false; };
-  }, [mode, liveConfig?.gamePda.toBase58(), gameState?.config.status, gameState?.delegated]);
-
-  // ─── LIVE MODE: Frontend bomb detonation ───────────────────
-  // Track active bombs and send detonateBomb TX when fuse expires.
-  // This removes dependency on backend cranking for bomb timing.
-
-  const detonationSentRef = useRef<Set<number>>(new Set());
-
-  useEffect(() => {
-    if (mode !== "live" || !liveConfig || !gameState) return;
-    if (gameState.config.status !== STATUS_ACTIVE) return;
-
-    // Primary gate: simulation tick (deterministic, rewindable)
-    if (gameState.currentTick == null) return;
-
-    const signer: gameService.Signer = liveConfig.sessionKey || liveConfig.wallet;
-    const playerPdas: PublicKey[] = [];
-    for (let i = 0; i < liveConfig.maxPlayers; i++) {
-      const [pda] = derivePlayerPda(liveConfig.gamePda, i);
-      playerPdas.push(pda);
-    }
-
-    for (const bomb of gameState.bombs) {
-      if (bomb.detonated) continue;
-      if (bomb.originalIndex == null) continue;
-
-      // TICK-BASED trigger: is the bomb past its fuse in simulation time?
-      if (bomb.explodeTick != null && gameState.currentTick < bomb.explodeTick) continue;
-
-      // SLOT-BASED validation: on-chain requires slot >= placed + fuse
-      // Only check if we have slot data (keeps TX from failing on-chain)
-      if (gameState.currentSlot != null) {
-        const fuseExpiry = new BN(bomb.placedAtSlot.toString()).toNumber() + bomb.fuseSlots;
-        if (gameState.currentSlot < fuseExpiry) continue;
-      }
-
-      // Both conditions met — send detonateBomb TX
-      if (detonationSentRef.current.has(bomb.originalIndex)) continue;
-      detonationSentRef.current.add(bomb.originalIndex);
-
-      gameService.detonateBomb(
-        signer,
-        liveConfig.gamePda,
-        bomb.originalIndex,
-        playerPdas,
-        gameState.delegated,
-      ).catch((e) => {
-        console.error("Detonate bomb failed:", e);
-        detonationSentRef.current.delete(bomb.originalIndex!);
-      });
-    }
-
-    // Clean up detonation tracking for bombs that are gone
-    for (const idx of detonationSentRef.current) {
-      if (!gameState.bombs.some((b) => b.originalIndex === idx && !b.detonated)) {
-        detonationSentRef.current.delete(idx);
-      }
-    }
-  }, [mode, liveConfig, gameState, localPlayerIndex]);
-
-  // ─── LIVE MODE: Local tick advancement ───────────────────
-  // Between server updates, advance currentTick locally so bombs
-  // detonate smoothly without waiting for next reconciliation.
-  // On next reconciliation, currentTick rewinds to server value (rollback).
-  useEffect(() => {
-    if (mode !== "live") return;
-    if (!gameState || gameState.config.status !== STATUS_ACTIVE) return;
-    if (gameState.currentTick == null) return;
-
-    const id = setInterval(() => {
-      setGameState((prev) => {
-        if (!prev || prev.currentTick == null || prev.config.status !== STATUS_ACTIVE) return prev;
-        const next = deepCloneState(prev);
-        next.currentTick! += 1;
-        simulateExpiredBombs(next);
-        return next;
-      });
-    }, 100); // match approximate server tick rate
-
-    return () => clearInterval(id);
-  }, [mode, gameState?.config.status, gameState?.currentTick != null]);
+  }, [mode, liveConfig?.gamePda.toBase58(), gameState?.config.status, isDelegated]);
 
   // Shared bomb detonation scheduler (mock mode only)
   const scheduleBombDetonation = useCallback(
@@ -579,21 +421,9 @@ export function useGameState({ mode, liveConfig }: UseGameStateOptions): UseGame
     []
   );
 
-  // ─── LIVE: Move player (nonce-based prediction + replay reconciliation) ──
-  // Record input with expectedNonce, apply locally, fire TX to ER.
-  // On server state, reconcileWithNonce uses inputNonce to ack — no position matching.
-
-  // Track the local nonce (server nonce + unconfirmed count).
-  // This lets us compute expectedNonce for new inputs without reading stale state.
-  const localNonceRef = useRef(0);
-
-  // Keep localNonce in sync: when server confirms inputs, our buffer shrinks,
-  // so localNonce = serverNonce + remaining unconfirmed count.
-  useEffect(() => {
-    if (!gameState) return;
-    const serverNonce = gameState.players[localPlayerIndex]?.inputNonce ?? 0;
-    localNonceRef.current = serverNonce + inputBufferRef.current.length;
-  }, [gameState, localPlayerIndex]);
+  // ─── LIVE: Move player ────────────────────────────────────
+  // Validate locally, send TX to ER. No optimistic state mutation.
+  // Next ER update will contain the authoritative position.
 
   const liveMove = useCallback(
     (direction: number) => {
@@ -608,37 +438,13 @@ export function useGameState({ mode, liveConfig }: UseGameStateOptions): UseGame
         setTimeout(() => { moveCooldownRef.current = false; }, 400);
       }
 
-      // Deterministic prediction: same collision rules as on-chain move_player
+      // Local validation: prevent sending obviously invalid TXs
       const [nx, ny] = getNewPos(localPlayer.x, localPlayer.y, direction);
       if (nx < 0 || nx >= GRID_WIDTH || ny < 0 || ny >= GRID_HEIGHT) return;
       const targetCell = gameState.grid.cells[ny * GRID_WIDTH + nx];
       if (!isWalkable(targetCell)) return;
 
-      // Record in input buffer with nonce-based tracking
-      const baseNonce = localNonceRef.current;
-      const seq = inputBufferRef.current.push("move", direction, baseNonce);
-      localNonceRef.current = baseNonce + 1;
-
-      // Apply move instantly (zero input lag)
-      setGameState((prev) => {
-        if (!prev) return prev;
-        const next = deepCloneState(prev);
-        const p = next.players[localPlayerIndex];
-        if (!p || !p.alive) return prev;
-        p.x = nx;
-        p.y = ny;
-        const cellIdx = ny * GRID_WIDTH + nx;
-        if (targetCell === CELL_LOOT) {
-          next.grid.cells[cellIdx] = CELL_EMPTY;
-        } else if (targetCell === CELL_POWERUP) {
-          applyPowerup(p, next.grid.powerupTypes[cellIdx]);
-          next.grid.cells[cellIdx] = CELL_EMPTY;
-          next.grid.powerupTypes[cellIdx] = 0;
-        }
-        return next;
-      });
-
-      // Fire TX to ER — on failure, remove from buffer so next reconciliation corrects
+      // Send TX to ER — no local state mutation
       const signer: gameService.Signer = liveConfig.sessionKey || liveConfig.wallet;
       const [localPlayerPda] = derivePlayerPda(liveConfig.gamePda, localPlayerIndex);
       gameService.movePlayer(
@@ -647,46 +453,30 @@ export function useGameState({ mode, liveConfig }: UseGameStateOptions): UseGame
         localPlayerPda,
         direction,
         gameState.delegated,
-      ).catch((e) => {
+      ).then((sig) => {
+        if (sig) showTxToast("Move", sig);
+      }).catch((e) => {
         console.error("Move TX failed:", e);
-        inputBufferRef.current.removeBySeq(seq);
       });
     },
     [liveConfig, gameState, localPlayerIndex]
   );
 
-  // ─── LIVE: Place bomb (nonce-based + optimistic local) ───────
+  // ─── LIVE: Place bomb ─────────────────────────────────────
+  // Send TX to ER. No optimistic state mutation.
+  // Bomb appears when ER state includes it.
 
   const livePlaceBomb = useCallback(() => {
     if (!liveConfig || !gameState || gameState.config.status !== STATUS_ACTIVE) return;
     const p = gameState.players[localPlayerIndex];
     if (!p || !p.alive || p.activeBombs >= p.maxBombs) return;
 
-    // Cooldown guard: prevent spamming before server confirms
+    // Cooldown guard: prevent spamming before ER confirms
     if (bombCooldownRef.current) return;
     bombCooldownRef.current = true;
     setTimeout(() => { bombCooldownRef.current = false; }, 1000);
 
-    const cellIdx = p.y * GRID_WIDTH + p.x;
-
-    // Record in input buffer with nonce-based tracking
-    const baseNonce = localNonceRef.current;
-    const seq = inputBufferRef.current.push("bomb", undefined, baseNonce);
-    localNonceRef.current = baseNonce + 1;
-
-    // Optimistic: show bomb on local state immediately
-    setGameState((prev) => {
-      if (!prev) return prev;
-      const next = deepCloneState(prev);
-      const player = next.players[localPlayerIndex];
-      if (player) player.activeBombs++;
-      if (next.grid.cells[cellIdx] === CELL_EMPTY) {
-        next.grid.cells[cellIdx] = CELL_BOMB;
-      }
-      return next;
-    });
-
-    // Fire TX to ER — on failure, remove from buffer
+    // Send TX to ER — no local state mutation
     const signer: gameService.Signer = liveConfig.sessionKey || liveConfig.wallet;
     const [localPlayerPda] = derivePlayerPda(liveConfig.gamePda, localPlayerIndex);
     gameService.placeBomb(
@@ -694,9 +484,10 @@ export function useGameState({ mode, liveConfig }: UseGameStateOptions): UseGame
       liveConfig.gamePda,
       localPlayerPda,
       gameState.delegated,
-    ).catch((e) => {
+    ).then((sig) => {
+      if (sig) showTxToast("Bomb", sig);
+    }).catch((e) => {
       console.error("Place bomb TX failed:", e);
-      inputBufferRef.current.removeBySeq(seq);
       bombCooldownRef.current = false;
     });
   }, [liveConfig, gameState, localPlayerIndex]);
@@ -918,44 +709,7 @@ function hasAdjacentBlock(cells: number[], x: number, y: number): boolean {
   return false;
 }
 
-/**
- * Deterministic bomb detonation based on simulation ticks.
- * Called after rollback+replay AND during local tick advancement.
- * Uses ONLY state.currentTick — no wall-clock, no slot time.
- * Idempotent: already-detonated bombs are skipped.
- */
-function simulateExpiredBombs(state: FullGameState): void {
-  if (state.currentTick == null) return;
-
-  for (let i = state.bombs.length - 1; i >= 0; i--) {
-    const bomb = state.bombs[i];
-    if (bomb.detonated) continue;
-    if (bomb.explodeTick == null) continue;
-    if (state.currentTick < bomb.explodeTick) continue;
-
-    // Bomb fuse expired in simulation — detonate deterministically
-    const cellIdx = bomb.y * GRID_WIDTH + bomb.x;
-    if (state.grid.cells[cellIdx] === CELL_BOMB) {
-      state.grid.cells[cellIdx] = CELL_EXPLOSION;
-    }
-
-    // Reuse existing explosion propagation
-    detonateBombAt(state, cellIdx, bomb.range, -1);
-
-    bomb.detonated = true;
-
-    // Decrement owner's activeBombs
-    const ownerPlayer = state.players.find(
-      (p) => p.authority && bomb.owner && p.authority.equals(bomb.owner)
-    );
-    if (ownerPlayer) {
-      ownerPlayer.activeBombs = Math.max(0, ownerPlayer.activeBombs - 1);
-    }
-
-    // Check if any player is standing on an explosion cell
-    checkPlayerDeaths(state);
-  }
-}
+// ─── Mock Mode Helpers (not used in live mode) ──────────────
 
 function detonateBombAt(state: FullGameState, cellIdx: number, range: number, _ownerIdx: number) {
   const bx = cellIdx % GRID_WIDTH;
@@ -1043,6 +797,5 @@ function deepCloneState(state: FullGameState): FullGameState {
     })),
     delegated: state.delegated,
     currentSlot: state.currentSlot,
-    currentTick: state.currentTick,
   };
 }

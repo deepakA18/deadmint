@@ -581,6 +581,64 @@ function anchorPlayerToState(p: any): PlayerState {
   };
 }
 
+// ─── Inline Account Decoders (for subscription callbacks) ─────────
+//
+// onAccountChange provides AccountInfo<Buffer> directly over WebSocket.
+// These decode functions avoid an HTTP round-trip by using the data in-hand.
+
+/** Decode a game account buffer into config + grid + bombs. Returns null on decode failure. */
+export function decodeGameAccount(data: Buffer): {
+  config: GameConfig;
+  grid: GridState;
+  bombs: BombState[];
+} | null {
+  try {
+    const program = getProgram(getBaseConnection());
+    const game = (program as any).coder.accounts.decode("game", data);
+    const config = anchorGameToConfig(game);
+    const grid: GridState = {
+      cells: Array.from(game.cells),
+      powerupTypes: Array.from(game.powerupTypes),
+    };
+    const bombs: BombState[] = game.bombs
+      .map((b: any, i: number) => ({ ...b, _idx: i }))
+      .filter((b: any) => b.active || b.detonated)
+      .map((b: any) => ({
+        owner: b.owner.toBase58() === PublicKey.default.toBase58() ? null : b.owner,
+        x: b.x, y: b.y, range: b.range,
+        fuseSlots: b.fuseSlots,
+        placedAtSlot: b.placedAtSlot,
+        detonated: b.detonated,
+        originalIndex: b._idx,
+      }));
+    return { config, grid, bombs };
+  } catch {
+    return null;
+  }
+}
+
+/** Decode a player account buffer. Returns null on decode failure. */
+export function decodePlayerAccount(data: Buffer): PlayerState | null {
+  try {
+    const program = getProgram(getBaseConnection());
+    const p = (program as any).coder.accounts.decode("player", data);
+    return anchorPlayerToState(p);
+  } catch {
+    return null;
+  }
+}
+
+/** Default empty player (for slots where account doesn't exist yet). */
+export function emptyPlayer(index: number): PlayerState {
+  return {
+    authority: null, x: 0, y: 0, alive: false,
+    collectedSol: new BN(0), wager: new BN(0),
+    bombRange: 0, maxBombs: 0, activeBombs: 0, speed: 0,
+    playerIndex: index, lastMoveSlot: new BN(0), kills: 0,
+    inputNonce: 0,
+  };
+}
+
 // ─── Batched State Fetch (single RPC call, like SendRC pattern) ──
 
 export async function fetchGameStateBatched(

@@ -29,14 +29,15 @@ export function registerGame(
   gamePda: PublicKey,
   gameId: BN,
   maxPlayers: number,
-  initialStatus = 0
+  initialStatus = 0,
+  staggerMs = 0
 ): boolean {
   const key = gamePda.toBase58();
   if (workers.has(key)) return false;
 
   const worker = new GameWorker(gamePda, gameId, maxPlayers, initialStatus);
   workers.set(key, worker);
-  worker.start();
+  worker.start(staggerMs);
 
   console.log(`[GameManager] Registered game ${key.slice(0, 8)}... (id=${gameId.toString()}, maxPlayers=${maxPlayers})`);
   return true;
@@ -91,8 +92,10 @@ export async function discoverAndRegisterAll(): Promise<number> {
   const games = await discoverAllGames();
   let registered = 0;
 
-  for (const g of games) {
-    const isNew = registerGame(g.gamePda, g.gameId, g.maxPlayers, g.status);
+  for (let i = 0; i < games.length; i++) {
+    const g = games[i];
+    // Stagger workers by 1s each to avoid simultaneous RPC bursts
+    const isNew = registerGame(g.gamePda, g.gameId, g.maxPlayers, g.status, i * 1000);
     if (isNew) registered++;
   }
 

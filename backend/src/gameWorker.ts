@@ -1,20 +1,17 @@
 import { PublicKey } from "@solana/web3.js";
 import { BN } from "@coral-xyz/anchor";
 import {
-  SIM_TICK_MS,
   POLL_INTERVAL_ACTIVE_MS,
   POLL_INTERVAL_ACTIVE_ER_MS,
   POLL_INTERVAL_LOBBY_MS,
   CRANK_COOLDOWN_MS,
   DELEGATION_TIMEOUT_MS,
+  DELEGATION_CHECK_INTERVAL_MS,
   STATUS_LOBBY,
   STATUS_ACTIVE,
   STATUS_FINISHED,
   STATUS_CLAIMED,
   MAX_BOMBS,
-  EXPLOSION_DURATION_SLOTS,
-  FUSE_TICKS,
-  EXPLOSION_TICKS,
 } from "./config";
 import {
   fetchFullGameState,
@@ -39,9 +36,7 @@ export class GameWorker {
   readonly gameId: BN;
   readonly maxPlayers: number;
 
-  private _simTimer: ReturnType<typeof setInterval> | null = null;   // Loop A handle
-  private _rpcTimer: ReturnType<typeof setTimeout> | null = null;    // Loop B handle
-  private _cachedState: FetchedGameState | null = null;              // last successful RPC result
+  private _rpcTimer: ReturnType<typeof setTimeout> | null = null;
   private running = false;
   private lastCrankTime = 0;
   private checkGameEndSent = false;
@@ -50,9 +45,6 @@ export class GameWorker {
   private _delegated = false;
   private _delegating = false;
   private _undelegating = false;
-  private _currentTick = 0;
-  private _bombTickMap = new Map<string, { placedTick: number; explodeTick: number }>();
-  private _explosionExpiry = new Map<number, number>(); // cellIndex → expiresAtTick
 
   constructor(gamePda: PublicKey, gameId: BN, maxPlayers: number, initialStatus = STATUS_LOBBY) {
     this.gamePda = gamePda;
@@ -70,47 +62,25 @@ export class GameWorker {
     return this._lastWireState;
   }
 
-  start() {
+  start(staggerMs = 0) {
     if (this.running) return;
     this.running = true;
     console.log(`[GameWorker] Started for game ${this.gamePdaStr.slice(0, 8)}...`);
-    // Loop A: fixed-cadence simulation tick (synchronous, never blocks on RPC)
-    this._simTimer = setInterval(() => this.simTick(), SIM_TICK_MS);
-    // Loop B: RPC/chain loop (async, self-scheduling, can stall)
-    this.scheduleRpcLoop();
+    // Stagger first tick to avoid all workers hitting RPC simultaneously
+    if (staggerMs > 0) {
+      this._rpcTimer = setTimeout(() => this.rpcTick(), staggerMs);
+    } else {
+      this.scheduleRpcLoop();
+    }
   }
 
   stop() {
     this.running = false;
-    if (this._simTimer) { clearInterval(this._simTimer); this._simTimer = null; }
     if (this._rpcTimer) { clearTimeout(this._rpcTimer); this._rpcTimer = null; }
     console.log(`[GameWorker] Stopped for game ${this.gamePdaStr.slice(0, 8)}...`);
   }
 
-  // ─── Loop A: Simulation Tick ────────────────────────────────
-
-  /**
-   * Runs on setInterval(SIM_TICK_MS). Purely synchronous.
-   * Advances _currentTick, builds wire state, broadcasts.
-   * NEVER makes RPC calls. NEVER awaits anything.
-   * Keeps running even when RPC is stalled/down (uses cached state).
-   */
-  private simTick() {
-    if (!this.running) return;
-    if (this._status !== STATUS_ACTIVE) return;   // only tick during active games
-    if (!this._cachedState) return;                // no chain state yet (startup only)
-
-    this._currentTick += 1;
-
-    const wire = toWireState(
-      this._cachedState, this._delegated,
-      this._currentTick, this._bombTickMap, this._explosionExpiry,
-    );
-    this._lastWireState = wire;
-    broadcastToGame(this.gamePdaStr, { type: "state", data: wire });
-  }
-
-  // ─── Loop B: RPC/Chain Loop ─────────────────────────────────
+  // ─── RPC Poll → Broadcast Loop ─────────────────────────────
 
   private scheduleRpcLoop() {
     if (!this.running) return;
@@ -121,9 +91,9 @@ export class GameWorker {
   }
 
   /**
-   * Fetches chain state, sends crank TXs, handles delegation transitions.
-   * Can stall, retry, fail — sim loop keeps ticking independently.
-   * For non-ACTIVE states (lobby/finished), also broadcasts (sim loop is idle).
+   * Fetches authoritative state from ER/chain, broadcasts to WS clients,
+   * sends crank TXs, and handles delegation transitions.
+   * Pure relay — no simulation, no ticks, no state derivation.
    */
   private async rpcTick() {
     if (!this.running) return;
@@ -134,9 +104,6 @@ export class GameWorker {
         this.scheduleRpcLoop();
         return;
       }
-
-      // Update cached state — sim loop picks this up on next simTick()
-      this._cachedState = state;
 
       const prevStatus = this._status;
       this._status = state.game.status;
@@ -151,36 +118,16 @@ export class GameWorker {
         this.triggerUndelegation();
       }
 
-      // Active-only: crank TXs + bomb detonation tracking
+      // Active-only: crank TXs (detonateBomb, checkGameEnd)
       if (state.game.status === STATUS_ACTIVE) {
         await this.crankBombs(state);
         await this.crankGameEnd(state);
-
-        // Track detonation transitions → populate per-cell explosion expiry
-        for (let i = 0; i < MAX_BOMBS; i++) {
-          const bomb = state.game.bombs[i];
-          if (!bomb) continue;
-          const bombKey = `${i}:${bomb.placedAtSlot.toString()}`;
-          if (bomb.detonated && this._bombTickMap.has(bombKey)) {
-            for (let c = 0; c < state.game.cells.length; c++) {
-              if (state.game.cells[c] === 4 /* CELL_EXPLOSION */ && !this._explosionExpiry.has(c)) {
-                this._explosionExpiry.set(c, this._currentTick + EXPLOSION_TICKS);
-              }
-            }
-            this._bombTickMap.delete(bombKey);
-          }
-        }
       }
 
-      // Non-ACTIVE broadcast (sim loop is idle during lobby/finished)
-      if (state.game.status !== STATUS_ACTIVE) {
-        const wire = toWireState(
-          state, this._delegated,
-          this._currentTick, this._bombTickMap, this._explosionExpiry,
-        );
-        this._lastWireState = wire;
-        broadcastToGame(this.gamePdaStr, { type: "state", data: wire });
-      }
+      // Broadcast ER state to all connected clients
+      const wire = toWireState(state, this._delegated);
+      this._lastWireState = wire;
+      broadcastToGame(this.gamePdaStr, { type: "state", data: wire });
     } catch (e) {
       console.error(`[GameWorker] rpcTick error for ${this.gamePdaStr.slice(0, 8)}:`, e);
     }
@@ -209,7 +156,7 @@ export class GameWorker {
       }
     }
 
-    // Send up to 2 detonations per tick (TX size limits)
+    // Send up to 2 detonations per poll (TX size limits)
     for (const idx of expiredIndices.slice(0, 2)) {
       const sig = await sendDetonateBomb(this.gamePda, idx, playerPdas, this._delegated);
       if (sig) {
@@ -240,7 +187,7 @@ export class GameWorker {
       console.log(`[Crank] checkGameEnd for ${this.gamePdaStr.slice(0, 8)}: ${sig.slice(0, 16)}...`);
       broadcastToGame(this.gamePdaStr, { type: "crank", action: "checkGameEnd", tx: sig });
     } else {
-      // Reset so we can try again next tick
+      // Reset so we can try again next poll
       this.checkGameEndSent = false;
     }
   }
@@ -249,7 +196,7 @@ export class GameWorker {
 
   /**
    * Delegates the Game PDA and all Player PDAs to the Ephemeral Rollup.
-   * Runs asynchronously (fire-and-forget from tick).
+   * Runs asynchronously (fire-and-forget from poll loop).
    */
   private async triggerDelegation() {
     this._delegating = true;
@@ -292,7 +239,7 @@ export class GameWorker {
           console.log(`[ER] Delegation confirmed for game ${tag}`);
           return;
         }
-        await sleep(500);
+        await sleep(DELEGATION_CHECK_INTERVAL_MS);
       }
 
       console.warn(`[ER] Delegation timeout for ${tag}, continuing on base layer`);
@@ -335,7 +282,7 @@ export class GameWorker {
           console.log(`[ER] Undelegation confirmed for game ${tag}`);
           return;
         }
-        await sleep(500);
+        await sleep(DELEGATION_CHECK_INTERVAL_MS);
       }
 
       console.warn(`[ER] Undelegation timeout for ${tag}`);
@@ -351,29 +298,15 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-// ─── State Conversion ──────────────────────────────────────
+// ─── State Conversion (pure relay: BN→string, PK→base58) ───
 
 const PUBKEY_DEFAULT = PublicKey.default.toBase58();
 
 function toWireState(
   state: FetchedGameState,
   delegated: boolean,
-  currentTick: number,
-  bombTickMap: Map<string, { placedTick: number; explodeTick: number }>,
-  explosionExpiry: Map<number, number>,
 ): WireGameState {
   const g = state.game;
-
-  // Per-cell explosion expiry: each cell clears independently based on ticks.
-  // (On-chain only clears on next detonateBomb/movePlayer, so without this
-  // patch explosions persist visually if no one acts after a detonation.)
-  const cells = Array.from(g.cells);
-  for (const [cellIdx, expiresAt] of explosionExpiry) {
-    if (currentTick >= expiresAt && cells[cellIdx] === 4 /* CELL_EXPLOSION */) {
-      cells[cellIdx] = 0 /* CELL_EMPTY */;
-      explosionExpiry.delete(cellIdx);
-    }
-  }
 
   const config = {
     gameId: g.gameId.toString(),
@@ -393,7 +326,7 @@ function toWireState(
   };
 
   const grid = {
-    cells,
+    cells: Array.from(g.cells),
     powerupTypes: Array.from(g.powerupTypes),
   };
 
@@ -433,18 +366,6 @@ function toWireState(
   for (let i = 0; i < MAX_BOMBS; i++) {
     const b = g.bombs[i];
     if (b && (b.active || b.detonated)) {
-      const bombKey = `${i}:${b.placedAtSlot.toString()}`;
-      // Assign tick data when bomb first seen (composite key prevents slot reuse collision)
-      if (b.active && !b.detonated && !bombTickMap.has(bombKey)) {
-        bombTickMap.set(bombKey, {
-          placedTick: currentTick,
-          explodeTick: currentTick + FUSE_TICKS,
-        });
-      }
-      const ticks = bombTickMap.get(bombKey) ?? {
-        placedTick: currentTick,
-        explodeTick: currentTick + FUSE_TICKS,
-      };
       bombs.push({
         owner: pubkeyOrNull(b.owner),
         x: b.x,
@@ -454,15 +375,8 @@ function toWireState(
         placedAtSlot: b.placedAtSlot.toString(),
         active: b.active,
         detonated: b.detonated,
-        placedTick: ticks.placedTick,
-        explodeTick: ticks.explodeTick,
         originalIndex: i,
       });
-    } else {
-      // Clean up map entries for inactive/cleared bombs
-      for (const key of bombTickMap.keys()) {
-        if (key.startsWith(`${i}:`)) bombTickMap.delete(key);
-      }
     }
   }
 
@@ -474,7 +388,6 @@ function toWireState(
     currentSlot: state.currentSlot,
     timestamp: Date.now(),
     delegated,
-    currentTick,
   };
 }
 
