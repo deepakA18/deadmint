@@ -205,8 +205,8 @@ export function useGameState({ mode, liveConfig }: UseGameStateOptions): UseGame
     // Every player's client auto-detonates expired bombs directly on ER.
     // No backend dependency. If multiple clients send the same detonation,
     // on-chain program returns BombAlreadyDetonated — harmless.
-    const bombFirstSeen = new Map<number, number>(); // originalIndex → Date.now()
-    const bombDetonationSent = new Set<number>();     // originalIndex values in-flight
+    const bombFirstSeen = new Map<number, number>();       // originalIndex → Date.now()
+    const bombDetonationSent = new Map<number, number>();  // originalIndex → send timestamp
 
     const tryCrankBombs = () => {
       if (!active || !liveConfig || !delegated) return;
@@ -221,25 +221,31 @@ export function useGameState({ mode, liveConfig }: UseGameStateOptions): UseGame
 
       for (const bomb of cachedBombs) {
         if (bomb.originalIndex == null || bomb.detonated) continue;
-        if (bombDetonationSent.has(bomb.originalIndex)) continue;
+
+        // Skip if we sent a detonation TX less than 3s ago (allow retry after)
+        const sentAt = bombDetonationSent.get(bomb.originalIndex);
+        if (sentAt && now - sentAt < 3000) continue;
 
         if (!bombFirstSeen.has(bomb.originalIndex)) {
           bombFirstSeen.set(bomb.originalIndex, now);
         }
 
         const elapsed = now - bombFirstSeen.get(bomb.originalIndex)!;
-        const fuseMs = (bomb.fuseSlots || 8) * 400 + 500; // fuse duration + buffer
+        // ER has ~10-50ms slots vs base layer ~400ms. Be aggressive on ER —
+        // if TX arrives before fuse expires, on-chain rejects with FuseNotExpired (harmless).
+        const fuseMs = delegated
+          ? 1000  // ER: try after 1s (fuse_slots=8 × ~50ms = 400ms + buffer)
+          : (bomb.fuseSlots || 8) * 400 + 500;
 
         if (elapsed >= fuseMs) {
-          bombDetonationSent.add(bomb.originalIndex);
+          bombDetonationSent.set(bomb.originalIndex, now);
           const idx = bomb.originalIndex;
           gameService.detonateBomb(signer, gamePda, idx, playerPdas, delegated)
-            .then(sig => { if (sig) showTxToast("Boom", sig); })
-            .catch(() => { bombDetonationSent.delete(idx); }); // allow retry
+            .catch(() => { bombDetonationSent.delete(idx); });
         }
       }
 
-      // Clean up tracking for bombs no longer active
+      // Clean up tracking for bombs no longer in state
       const activeIndices = new Set(
         cachedBombs
           .filter(b => !b.detonated && b.originalIndex != null)
@@ -252,6 +258,11 @@ export function useGameState({ mode, liveConfig }: UseGameStateOptions): UseGame
         }
       }
     };
+
+    // Periodic bomb crank — ensures detonation even when no subscription updates fire.
+    // Without this, tryCrankBombs only runs reactively on state changes, so idle games
+    // (no moves after bomb placed) would never trigger detonation.
+    const bombCrankTimer = setInterval(tryCrankBombs, 500);
 
     // Compose FullGameState from cached data and push to React state.
     // Every field is from the latest ER push — this is assembly, not merging.
@@ -401,6 +412,7 @@ export function useGameState({ mode, liveConfig }: UseGameStateOptions): UseGame
     return () => {
       active = false;
       clearInterval(safetyPoll);
+      clearInterval(bombCrankTimer);
       for (const id of subscriptionIds) {
         try { conn.removeAccountChangeListener(id); } catch {}
       }
