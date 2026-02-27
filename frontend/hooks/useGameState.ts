@@ -201,6 +201,58 @@ export function useGameState({ mode, liveConfig }: UseGameStateOptions): UseGame
     const explosionFirstSeen = new Map<number, number>();
     const EXPLOSION_VISUAL_MS = 600;
 
+    // ── Frontend bomb crank ─────────────────────────────────────
+    // Every player's client auto-detonates expired bombs directly on ER.
+    // No backend dependency. If multiple clients send the same detonation,
+    // on-chain program returns BombAlreadyDetonated — harmless.
+    const bombFirstSeen = new Map<number, number>(); // originalIndex → Date.now()
+    const bombDetonationSent = new Set<number>();     // originalIndex values in-flight
+
+    const tryCrankBombs = () => {
+      if (!active || !liveConfig || !delegated) return;
+      if (!cachedGameConfig || cachedGameConfig.status !== STATUS_ACTIVE) return;
+
+      const now = Date.now();
+      const signer: gameService.Signer = liveConfig.sessionKey || liveConfig.wallet;
+      const playerPdas: PublicKey[] = [];
+      for (let i = 0; i < maxPlayers; i++) {
+        playerPdas.push(gameService.derivePlayerPda(gamePda, i)[0]);
+      }
+
+      for (const bomb of cachedBombs) {
+        if (bomb.originalIndex == null || bomb.detonated) continue;
+        if (bombDetonationSent.has(bomb.originalIndex)) continue;
+
+        if (!bombFirstSeen.has(bomb.originalIndex)) {
+          bombFirstSeen.set(bomb.originalIndex, now);
+        }
+
+        const elapsed = now - bombFirstSeen.get(bomb.originalIndex)!;
+        const fuseMs = (bomb.fuseSlots || 8) * 400 + 500; // fuse duration + buffer
+
+        if (elapsed >= fuseMs) {
+          bombDetonationSent.add(bomb.originalIndex);
+          const idx = bomb.originalIndex;
+          gameService.detonateBomb(signer, gamePda, idx, playerPdas, delegated)
+            .then(sig => { if (sig) showTxToast("Boom", sig); })
+            .catch(() => { bombDetonationSent.delete(idx); }); // allow retry
+        }
+      }
+
+      // Clean up tracking for bombs no longer active
+      const activeIndices = new Set(
+        cachedBombs
+          .filter(b => !b.detonated && b.originalIndex != null)
+          .map(b => b.originalIndex!)
+      );
+      for (const idx of bombFirstSeen.keys()) {
+        if (!activeIndices.has(idx)) {
+          bombFirstSeen.delete(idx);
+          bombDetonationSent.delete(idx);
+        }
+      }
+    };
+
     // Compose FullGameState from cached data and push to React state.
     // Every field is from the latest ER push — this is assembly, not merging.
     const composeAndSetState = () => {
@@ -243,6 +295,9 @@ export function useGameState({ mode, liveConfig }: UseGameStateOptions): UseGame
           localPlayerFoundRef.current = true;
         }
       }
+
+      // Frontend bomb crank — detonate expired bombs directly on ER
+      tryCrankBombs();
 
       setGameState(fullState);
       setIsLoading(false);
