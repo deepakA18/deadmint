@@ -101,6 +101,17 @@ export class GameWorker {
     try {
       const state = await fetchFullGameState(this.gamePda, this.maxPlayers, this._delegated);
       if (!state) {
+        // State fetch failed — if game should be ACTIVE but we're not on ER,
+        // check if it's delegated on-chain (account owned by delegation program
+        // can't be decoded from base layer). Switch to ER if confirmed.
+        if (this._status === STATUS_ACTIVE && !this._delegated && !this._delegating) {
+          try {
+            if (await isDelegated(this.gamePda)) {
+              console.log(`[GameWorker] Detected delegation on-chain for ${this.gamePdaStr.slice(0, 8)}, switching to ER`);
+              this._delegated = true;
+            }
+          } catch {}
+        }
         this.scheduleRpcLoop();
         return;
       }
@@ -111,6 +122,21 @@ export class GameWorker {
       // Trigger delegation when game transitions to ACTIVE
       if (prevStatus !== STATUS_ACTIVE && state.game.status === STATUS_ACTIVE && !this._delegated && !this._delegating) {
         this.triggerDelegation();
+      }
+
+      // Safety: if game is ACTIVE but we think it's not delegated, periodically re-check.
+      // Covers: delegation done by another process, or triggerDelegation() timed out but
+      // the TX actually landed. Without this, the worker is stuck on base layer forever.
+      if (state.game.status === STATUS_ACTIVE && !this._delegated && !this._delegating) {
+        try {
+          if (await isDelegated(this.gamePda)) {
+            console.log(`[GameWorker] Late delegation detection for ${this.gamePdaStr.slice(0, 8)}, switching to ER`);
+            this._delegated = true;
+            // Re-fetch from ER immediately instead of using stale base-layer state
+            this.scheduleRpcLoop();
+            return;
+          }
+        } catch {}
       }
 
       // Trigger undelegation when game transitions to FINISHED while delegated
